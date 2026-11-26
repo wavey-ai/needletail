@@ -51,6 +51,11 @@ RELAY_ARGS = ("--fec-bind", "--mesh-fec-target", "--mesh-media-fec-target",
               "--audio-epoch-ingress-target", "--audio-epoch-redundant-ingress-target")
 
 
+# part_repair_group "off", the headline of integration 6.
+HEADLINE_REPAIR = ["--relay-part-repair", "false", "--relay-link-repair", "false",
+                   "--relay-trim-forwarded-repair", "false"]
+
+
 def value_of(args: list[str], flag: str) -> str | None:
     return args[args.index(flag) + 1] if flag in args else None
 
@@ -193,6 +198,67 @@ class Render(Base):
         plan = deploy.compile_plan(program)
         rendered = deploy.render(state, settings, plan)
         return program, plan, {name: item["args"] for name, item in rendered.items()}
+
+    def test_regional_relays_admit_repair_from_their_source_lane_primary(self):
+        """4k-repair: a regional relay's primary lane carries sources only;
+        its answers and link repair are repair symbols, which a primary
+        session refuses unless promoted. With part repair (the default) the
+        regional relays are rendered promoted, once; with
+        relay_part_repair=false, as before."""
+        _program, _plan, args = self.render()
+        regional = ["new-dist-a", "new-dist-b"]
+        self.assertTrue(regional)
+        for name in regional:
+            self.assertEqual(args[name].count("--relay-primary-promoted"), 1, name)
+        _program, _plan, off = self.render(["relay_part_repair=false"])
+        for name in regional:
+            self.assertNotIn("--relay-primary-promoted", off[name], name)
+        # The first forwarders keep their one flag (repair on both lanes).
+        for name in ("lon-dist-a", "lon-dist-b"):
+            self.assertEqual(args[name].count("--relay-primary-promoted"), 1, name)
+        # Without the binaries to read, no 4k-repair flag is rendered (the
+        # binaries' defaults stand), whatever the settings say.
+        _program, _plan, given = self.render(["relay_decode_workers=1",
+                                              'relay_repair_sizing="measured"'])
+        for name, node_args in given.items():
+            self.assertNotIn("--relay-decode-workers", node_args, name)
+            self.assertNotIn("--relay-repair-sizing", node_args, name)
+
+    def test_part_repair_flags_render_where_the_binaries_take_them(self):
+        settings = self.settings(["relay_decode_workers=1", "relay_trim_to_margin=true",
+                                  'relay_repair_sizing="measured"',
+                                  "relay_repair_floor_permille=5",
+                                  "relay_part_store_mb=96"])
+        with mock.patch.object(deploy, "binary_has", return_value=True):
+            mesh = deploy.part_repair_args(["--relay-controlled-local"], settings)
+            contrib = deploy.part_repair_args(["--daw-media-bind", "x"], settings)
+            # A node off the fast plane keeps no parts: nothing.
+            self.assertEqual(deploy.part_repair_args(["--edge-http3"], settings), [])
+            # At their defaults: part_repair_group "off" (integration 6)
+            # renders its three switches off on a fast-plane node; None
+            # renders nothing, even where the binaries list every flag.
+            self.assertEqual(deploy.part_repair_args(["--relay-controlled-local"],
+                                                     self.settings()), HEADLINE_REPAIR)
+            self.assertEqual(deploy.part_repair_args(
+                ["--relay-controlled-local"], self.settings(["part_repair_group=null"])), [])
+            self.assertEqual(deploy.part_repair_args(["--daw-media-bind", "x"],
+                                                     self.settings()), [])
+        self.assertEqual(mesh, HEADLINE_REPAIR + ["--relay-trim-to-margin", "true",
+                                                  "--relay-decode-workers", "1",
+                                                  "--relay-part-store-mb", "96"])
+        self.assertEqual(contrib, ["--relay-repair-sizing", "measured",
+                                   "--relay-repair-floor-permille", "5",
+                                   "--relay-part-store-mb", "96"])
+        with mock.patch.object(deploy, "binary_has", return_value=False):
+            # The group's switches are rendered whatever the binary (the
+            # flags probe refuses one without them); the rest only where
+            # the binary has them.
+            self.assertEqual(deploy.part_repair_args(["--relay-controlled-local"], settings),
+                             HEADLINE_REPAIR)
+            self.assertEqual(deploy.part_repair_args(["--daw-media-bind", "x"], settings), [])
+        with self.assertRaises(ValueError):
+            deploy.part_repair_args(["--daw-media-bind", "x"],
+                                    self.settings(['relay_repair_sizing="loss"']))
 
     def test_three_links_in_the_contributors_region(self):
         # The contributor alone (the lab's standby has its own tests below).
@@ -1109,6 +1175,33 @@ class TwoContributors(Base):
         rendered = deploy.render(state, settings, plan)
         return state, rendered, {name: item["args"] for name, item in rendered.items()}
 
+    def test_every_source_lane_child_of_the_local_lab_admits_repair(self):
+        """Review M5 on the local lab's topology (edge_lab): one contributor
+        and two, merged and legacy, its slots and standby edges rendered:
+        every fast-plane child whose primary lane is `source`, and every
+        lease child, takes --relay-primary-promoted exactly once (none for
+        a compiled source-lane child of a forwarder with part repair off)."""
+        from test_scale_topology import primary_promotion_problems
+        for state_of in (one_contributor_state, two_contributor_state):
+            for mode in ("merged", "legacy"):
+                for part_repair in ("true", "false"):
+                    with self.subTest(state=state_of.__name__, mode=mode,
+                                      part_repair=part_repair):
+                        settings = self.settings([f"topology={mode}",
+                                                  f"relay_part_repair={part_repair}"])
+                        state = state_of()
+                        with mock.patch.object(deploy.time, "time",
+                                               return_value=1_763_900_000.0):
+                            program = deploy.build_program(state, settings, ROUTES)
+                        plan = deploy.compile_plan(program)
+                        with redirect_stderr(io.StringIO()):
+                            rendered = deploy.render(state, settings, plan)
+                        args = {name: item["args"] for name, item in rendered.items()}
+                        self.assertTrue(any("--relay-controlled-local" in item
+                                            for item in args.values()))
+                        self.assertEqual(primary_promotion_problems(
+                            state, plan, args, part_repair == "true"), [])
+
     def test_the_ports_of_two_contributors_at_the_first_forwarders(self):
         """Workstream A 2.7: each first forwarder takes contrib-lon on its
         primary socket and contrib-lon-b on its secondary socket, crossed."""
@@ -1697,8 +1790,11 @@ class Activation(unittest.TestCase):
         was started. Its activation (start, the autoscaler's standby, a
         roll's surge edge: the service not running) reruns the check after
         the build's binaries are linked and before the service starts, when
-        this boot's record is missing or not complete; never on a node whose
-        service runs, nor with a complete record."""
+        this boot's record is missing or not complete; never with a complete
+        record. cmpd8: a node whose service runs without a complete record
+        (the contributor, whose check had run with no nodecheck and stayed
+        active) is stopped first and then warmed; not on a rollback, and not
+        while no nodecheck is on the node."""
         check = self.units / "needletail-node-check.service"
         check.write_text("check\n")
         inactive = self.root / "inactive"
@@ -1708,11 +1804,18 @@ class Activation(unittest.TestCase):
         (self.root / "builds" / "b" / "needletail-nodecheck").write_text("#!/bin/sh\n")
         (self.root / "builds" / "b" / "needletail-nodecheck").chmod(0o755)
         rerun = "systemctl restart needletail-node-check.service"
-        for record, held_out, wanted in ((None, True, True),
-                                         ('{"complete":false,"verdict":"stops"}', True, True),
-                                         ('{"complete":true,"verdict":"ok"}', True, False),
-                                         (None, False, False)):
-            with self.subTest(record=record, held_out=held_out):
+        for record, held_out, wanted, build, extra in (
+                (None, True, True, "b", ()),
+                ('{"complete":false,"verdict":"stops"}', True, True, "b", ()),
+                ('{"complete":true,"verdict":"ok"}', True, False, "b", ()),
+                ('{"complete":true,"verdict":"ok"}', False, False, "b", ()),
+                (None, False, True, "b", ()),
+                (None, False, False, "b", ("--rollback",)),
+                (None, False, False, "a", ())):
+            with self.subTest(record=record, held_out=held_out, build=build, extra=extra):
+                if build == "a":
+                    # No nodecheck on the node: warming would write nothing.
+                    (self.bin / "needletail-nodecheck").unlink(missing_ok=True)
                 warm = self.run_dir / "node-warm.json"
                 warm.unlink(missing_ok=True)
                 if record is not None:
@@ -1722,10 +1825,16 @@ class Activation(unittest.TestCase):
                 if held_out:
                     inactive.write_text("")
                 self.log.unlink(missing_ok=True)
-                self.stage("b")
-                self.assertTrue(self.activate()[1]["ok"])
+                self.stage(build)
+                if extra:
+                    shutil.copy(self.args, f"{self.args}.prev")
+                self.assertTrue(self.activate(*extra)[1]["ok"])
                 calls = self.calls().splitlines()
                 self.assertEqual(rerun in calls, wanted, calls)
+                stop = f"systemctl stop {self.SERVICE}.service"
+                self.assertEqual(stop in calls, wanted and not held_out, calls)
+                if wanted and not held_out:
+                    self.assertLess(calls.index(stop), calls.index(rerun))
                 if wanted:
                     # After the binaries are linked, before the service.
                     self.assertEqual(os.readlink(self.bin / "needletail-nodecheck"),

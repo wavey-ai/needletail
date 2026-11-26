@@ -892,7 +892,7 @@ a stream S that X feeds C (X's row at C has `objects_1s > 0`) and another parent
 | --- | --- | --- |
 | P1 live | P: `source_age_ms <= 100` | P's sources of S arrive now |
 | P2 complete | P: `window_s >= 10`, `resets_10s == 0`, `objects_10s(P) >= objects_10s(X) - objects_1s(X) / 10`; and (a) `skipped_10s(P) <= max(2, 0.1% of the objects)`, (b) the child itself missed nothing of S (its `streams[].missed_10s == 0`), (c) no object skipped by both P and X (proved when either skipped none; otherwise its `streams[].skipped_by_every_parent_10s == 0`, null failing) | Stopping X leaves C nothing short of what it gets today, and P keeps X's pace to within 100 ms. Amended 24 Nov (local proof 2, F4): a skip is an advance of one lane's head over a number, so a lane's ordinary loss that its burst copy, the other parent or the cache mesh repaired counts; healthy lab lanes skip 0 to 4 of 10,000 objects in 10 s, and `skipped_10s == 0` refused every ingress kill and forwarder roll. Amended again at integration 4: av-mesh serves (b) and (c) exactly on the child's `/api/node` (`streams[].missed_10s`, `streams[].skipped_by_every_parent_10s`), and the counters of A's rules as `relay_counters`, so no gate reads `/api/mesh/local` |
-| P3 on time | `slack_mean_us_10s(P) >= slack_mean_us_10s(X) - parity` and `slack_min_us_10s(P) >= slack_min_us_10s(X) - parity`, parity = `--parity-ms` (1.0) | With X gone, C's arrivals are at most 1 ms later on average (the rule's p99 margin) and its worst object of the last 10 s is at most 1 ms later (the rule's silence margin is one unit). Only differences of slack on one node are used: with workstream A the deadline is a point on the stream's own timeline, so a slack by itself says nothing; "past its deadline" is LG4's and CG4's counter |
+| P3 on time | `slack_mean_us_10s(P) >= slack_mean_us_10s(X) - parity` and `slack_min_us_10s(P) >= slack_min_us_10s(X) - max(5 ms, 1% of slack_mean_us_10s(X), parity)`, parity = `--parity-ms` (1.0) | With X gone, C's arrivals are at most 1 ms later on average (the rule's p99 margin), and its worst object of the last 10 s is no later than one object's ordinary jitter. Only differences of slack on one node are used: with workstream A the deadline is a point on the stream's own timeline, so a slack by itself says nothing; "past its deadline" is LG4's and CG4's counter. Amended 25 Nov (lead, after local proof 3): the minimum is one object's arrival and moved 1 to 4 ms between parents whose means were equal (998.3 ms), so the 1 ms bound on it refused the forwarder roll and the ingress kill intermittently while dry nulls passed; the mean keeps 1 ms, the minimum takes max(5 ms, 1% of the mean slack). The gate's output names both figures of every pair it judged, pass or refuse: a `P3 over N pair(s)` note with the largest lateness of each against what was allowed, and `p3` per pair in its evidence |
 | P4 whole objects | When P feeds C on a repair lane (a compiled child's secondary): `multi_symbol_10s == 0` on X's row | A repair lane carries the source of one-symbol audio objects only (RL:728-746); an audio stream with larger objects is not covered by P, and the gate says so |
 
 Lease children. For every `(C, S)` in X's `children.lease.pairs_list` with an audio stream, C found by its
@@ -1382,8 +1382,10 @@ measured again in this layout (lab-parity Q1 with `own_cpus=1`).
 ## 7. Deploy and tooling: the Linode proving run
 
 **As run (lead, 24 Nov): one lab of 5 billed hours, `deploy/low-latency/SCALE.md` "The proving
-run".** 45 nodes at $3.510 an hour (53 at $3.942 with every slot; ceilings
-`NEEDLETAIL_LINODE_MAX_NODES=53` and `NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95`), up to down about 4 h 15
+run".** 45 nodes at $3.834 an hour (53 at $4.266 with every slot; ceilings
+`NEEDLETAIL_LINODE_MAX_NODES=53` and `NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30`; tools6: London's two
+first-hop forwarders on g6-dedicated-8, +$0.324 an hour, for their heavy egress at 247 Mbit/s,
+`scripts/egress_plan.py`), up to down about 4 h 15
 min, the watchdog at 5 h, `--budget-usd 100`; the changes are two real runs each in shared probes
 (`phases-proving.json`, groups C1 and C2), scored by change-window.py with its shared-probe patch. The
 commands are in `~/wavey.ai/.resilient/proving-run-message.md`. What follows is the first design, kept
@@ -1392,7 +1394,7 @@ for its reasoning; its phase plan is `phases-proving-full.json`.
 ```sh
 cd ~/wavey.ai/needletail-resilient
 export NEEDLETAIL_AV_MESH_ROOT=~/wavey.ai/av-mesh-resilient NEEDLETAIL_AV_CONTRIB_ROOT=~/wavey.ai/av-contrib-resilient
-export NEEDLETAIL_LINODE_MAX_NODES=53 NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95     # recorded in the state by up
+export NEEDLETAIL_LINODE_MAX_NODES=53 NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30     # recorded in the state by up
 scripts/linode-small-mesh-lab.py check --topology deploy/low-latency/topology-proving.json
 scripts/linode-small-mesh-lab.py up --topology deploy/low-latency/topology-proving.json --run-id prove1 \
     --optional-sites sydney --watchdog-hours 5 --budget-usd 100
@@ -1469,8 +1471,9 @@ interfaces (RP1 shows it; the tool does not depend on it).
 ## 8. Risks, what stays open, out of scope
 
 Risks:
-- The gate may refuse healthy long-haul pairs. P3 asks that the surviving parent's worst object of ten seconds
-  be within 1 ms of the leaving parent's; two routes with independent jitter peaks can differ by more. N1 shows
+- The gate may refuse healthy long-haul pairs. P3 asks that the surviving parent's mean slack be within 1 ms
+  of the leaving parent's and its worst object of ten seconds within max(5 ms, 1% of the mean slack) (amended
+  25 Nov; it was 1 ms on the worst object too); two routes with independent jitter peaks can differ by more. N1 shows
   the refusal rate on Linode before anything restarts. If it refuses, the roll of that forwarder waits for
   workstream D's several flows (L7), or the operator raises `--parity-ms` knowingly; the record then says so.
 - CW is strict about silence, and a long window has a longer worst gap than a short baseline by chance. The

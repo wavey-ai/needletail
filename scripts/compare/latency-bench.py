@@ -259,9 +259,20 @@ def build_parser() -> argparse.ArgumentParser:
                              "to itself (default), or the source host, sending every epoch to "
                              "each contributor (A 6, with the standby contributor)")
     parser.add_argument("--load-assign", action="store_true",
-                        help="needletail-load listeners subscribe and move through the site's "
+                        help="the default since integration 6 (kept for old command lines): "
+                             "needletail-load listeners subscribe and move through the site's "
                              "/api/assignment (every distributor and edge of the site an entry "
-                             "point; Phase AM 10), not edge i mod n")
+                             "point; Phase AM 10), as real clients do")
+    parser.add_argument("--split-client-cpus", action="store_true",
+                        help="the readers, probes and 4K viewers on one half of the layout's "
+                             "client CPUs and the crowd's load tool on the other "
+                             "(edge_lab.rest_split), and each client's run-queue wait and its "
+                             "namespace's UDP receive drops recorded (client-cpu.json): a 4K "
+                             "viewer then does not wait behind the crowd (integration 6)")
+    parser.add_argument("--load-direct", action="store_true",
+                        help="needletail-load listener i starts at edge i mod n and never asks "
+                             "an entry (before integration 6 the default: refused listeners "
+                             "re-asked full edges 10-80k times)")
     parser.add_argument("--sample-gauges", action="store_true",
                         help="sample every serving edge's client UDP gauges (/api/assignment: "
                              "subscribers, load_permille, egress_observed_bps, draining) once a "
@@ -271,6 +282,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(always on with 4K)")
     parser.add_argument("--udp-client-args", default="", metavar="ARGS",
                         help="extra arguments of every audio UDP client (e.g. \"--fast-lane false\")")
+    parser.add_argument("--video-udp-client-args", default="", metavar="ARGS",
+                        help="extra arguments of every 4K UDP viewer (e.g. "
+                             "\"--quality-moves-per-minute 0\": an A/B of place240's moves)")
     parser.add_argument("--unread-payloads", default="", metavar="LIST",
                         help="more renditions that nobody reads (e.g. \"pcm,flac\"): each has a "
                              "sender of its own and is published beside --payload (wave 7 item 5: "
@@ -476,15 +490,159 @@ def sender_command(args, start: int, loop_file: str) -> list[str]:
             *split(args.sender_args)]
 
 
+def planned_left_out(args) -> set[str]:
+    """The nodes that the run's lab leaves out: the running lab's with
+    --no-up, else those of its `up` settings (`leave_out=`, or own_cpus's
+    default when own_cpus=1 names none)."""
+    if args.no_up:
+        return lab.left_out()
+    sets = dict(item.partition("=")[::2] for item in args.set)
+    if sets.get("leave_out"):
+        return lab.leave_out_names(sets["leave_out"])
+    if str(sets.get("own_cpus", "")).lower() in ("1", "true"):
+        return set(lab.OWN_DEFAULT_LEFT_OUT)
+    return set()
+
+
+def client_prefix(args, host: str, kind: str) -> list[str]:
+    """lab.enter for a client of `kind` ("load" or "client"): with
+    --split-client-cpus the load tool on the layout's tool CPUs and every
+    other client on its probe CPUs."""
+    if not getattr(args, "split_client_cpus", False):
+        return lab.enter(host)
+    split = lab.rest_split(lab.load("cpus.json"))
+    cpus = split.get("tools" if kind == "load" else "probes")
+    if not cpus:
+        return lab.enter(host)
+    saved = os.environ.get(lab.TOOL_CPUS_ENV)
+    os.environ[lab.TOOL_CPUS_ENV] = ",".join(str(cpu) for cpu in cpus)
+    try:
+        return lab.enter(host)
+    finally:
+        if saved is None:
+            os.environ.pop(lab.TOOL_CPUS_ENV, None)
+        else:
+            os.environ[lab.TOOL_CPUS_ENV] = saved
+
+
+def namespace_udp(host: str) -> dict:
+    """A namespace's UDP counters (/proc/net/snmp): RcvbufErrors and others."""
+    try:
+        text = lab.run_in(host, ["cat", "/proc/net/snmp"], check=False, timeout=10)
+    except Exception:  # noqa: BLE001 - a record, never a failure
+        return {}
+    rows = [line.split() for line in text.splitlines() if line.startswith("Udp:")]
+    if len(rows) < 2:
+        return {}
+    return {key: int(value) for key, value in zip(rows[0][1:], rows[1][1:]) if value.isdigit()}
+
+
+def schedstat(pid: int) -> tuple[int, int] | None:
+    """A process's CPU time and run-queue wait so far (ns), its threads
+    summed (/proc/PID/task/*/schedstat)."""
+    run = wait = 0
+    try:
+        for task in pathlib.Path(f"/proc/{pid}/task").iterdir():
+            fields = (task / "schedstat").read_text().split()
+            run += int(fields[0])
+            wait += int(fields[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return run, wait
+
+
+def client_kind(item: dict) -> str:
+    """A client's kind in client-cpu.json: "4k-udp" (a 4K UDP viewer),
+    "4k-hls" (a 4K LL-HLS reader), "udp" (an audio probe), "reader"."""
+    if item.get("kind") == "udp":
+        return "4k-udp" if ".4k." in pathlib.Path(str(item.get("report", ""))).name else "udp"
+    return "4k-hls" if item.get("kind") == "hls" else "reader"
+
+
+def socket_drops(pid: int) -> int | None:
+    """The drops of a process's own UDP sockets so far (/proc/PID/net/udp
+    and udp6, the `drops` column of the sockets its fds hold), so that a
+    viewer's drops are told from its namespace's other clients'. None when
+    the process is gone."""
+    try:
+        inodes = set()
+        for fd in pathlib.Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                inodes.add(target[8:-1])
+        total = 0
+        for table in ("udp", "udp6"):
+            for line in pathlib.Path(f"/proc/{pid}/net/{table}").read_text().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) >= 13 and fields[9] in inodes:
+                    total += int(fields[12])
+        return total
+    except (OSError, ValueError):
+        return None
+
+
+def planned_nodes(args, role: str, site: str) -> list[str]:
+    """A site's nodes of `role` in the run's lab: the running lab's with
+    --no-up (slots taken in count), else the planned layout's (no slot)."""
+    # A caller without a layout of its own (change-run's crowd on a running
+    # lab) reads the running lab's.
+    if getattr(args, "no_up", True) or not hasattr(args, "set"):
+        return lab.edges(site) if role == "edge" else lab.distributors(site)
+    out = planned_left_out(args)
+    slots = set(lab.slot_nodes())
+    return [name for name in lab.names(role, site) if name not in out and name not in slots]
+
+
+def reader_entry(args, site: str) -> str:
+    """The entry point of a site's readers and viewers: its first
+    distributor in the run's layout (planned_left_out; never a slot). Not
+    the lab's record of what it left out, which is the last lab's until
+    this run's `up`."""
+    out = planned_left_out(args)
+    slots = set(lab.slot_nodes())
+    return next(name for name in lab.names("distributor", site)
+                if name not in out and name not in slots)
+
+
+def reader_hosts(args) -> list[str]:
+    """The reader hosts of the run: those of --hosts whose site has a
+    distributor in the lab (not left out, not a slot), the entry point of
+    the host's readers and viewers. With the default hosts a host of a site
+    the layout leaves out is dropped (logged); a host named in
+    --hosts whose site is left out is refused. (Integration 6: a London-only
+    layout made every pass after the first fail on new-readers' entry.)"""
+    named = [item for item in args.hosts.split(",") if item]
+    out = planned_left_out(args)
+    slots = set(lab.slot_nodes())
+    kept, dropped = [], []
+    for host in named:
+        site = lab.node(host)["site"]
+        entries = [name for name in lab.names("distributor", site)
+                   if name not in out and name not in slots]
+        (kept if entries else dropped).append(host)
+    if dropped:
+        if args.hosts != ",".join(READER_HOSTS):
+            raise SystemExit(f"--hosts {','.join(dropped)}: the lab leaves out every distributor "
+                             "of its site (leave_out); name hosts of the sites it runs")
+        log(f"reader hosts {', '.join(dropped)} left out: their site has no distributor in "
+            "this layout")
+    if not kept:
+        raise SystemExit("no reader host: the layout leaves out every site's distributors")
+    return kept
+
+
 def reader_commands(args, out: pathlib.Path, index: str) -> list[dict]:
     """ntcmp hls readers: --h2-window-ms of parts in flight over HTTP/2 and
     --h3-window parts over HTTP/3 on each reader host, through the first
     distributor of the host's site."""
     readers = []
     stream = PAYLOAD_STREAM[args.payload]
-    for host in [item for item in args.hosts.split(",") if item]:
+    for host in reader_hosts(args):
         site = lab.node(host)["site"]
-        entry = lab.distributors(site)[0]
+        entry = reader_entry(args, site)
         windows = reader_windows(args)
         for lane, window, http3 in (("h2", windows["h2"], False), ("h3", windows["h3"], True)):
             stem = out / f"{host}.{lane}"
@@ -635,9 +793,9 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
     needletail-udp-client viewers (its JSON report on standard output)."""
     viewers = video_viewers(args)
     items = []
-    for host in [item for item in args.hosts.split(",") if item]:
+    for host in reader_hosts(args):
         site = lab.node(host)["site"]
-        entry = lab.distributors(site)[0]
+        entry = reader_entry(args, site)
         if viewers["readers"]:
             stem = out / f"{host}.4k.h3"
             items.append({"host": host, "site": site, "kind": "hls", "entry": entry,
@@ -662,7 +820,8 @@ def video_commands(args, out: pathlib.Path) -> list[dict]:
                               "--session", f"bench-{args.name}-{host}-udp-{index}",
                               # Each 4K part's arrival, bytes and publication
                               # time (wave 9 D: the loop points, the tail).
-                              "--arrivals", str(out / f"{host}.4k.udp{index}.arrivals.csv")]})
+                              "--arrivals", str(out / f"{host}.4k.udp{index}.arrivals.csv"),
+                              *split(getattr(args, "video_udp_client_args", "") or "")]})
     return items
 
 
@@ -873,9 +1032,9 @@ def audio_udp_commands(args, out: pathlib.Path) -> list[dict]:
     arrival (--arrivals) and its JSON report on standard output."""
     stream = PAYLOAD_STREAM[args.payload]
     items = []
-    for host in [item for item in args.hosts.split(",") if item]:
+    for host in reader_hosts(args):
         site = lab.node(host)["site"]
-        entry = lab.distributors(site)[0]
+        entry = reader_entry(args, site)
         for index in range(args.udp_clients):
             stem = out / f"{host}.uc{index}"
             items.append({"host": host, "site": site, "kind": "udp", "entry": entry,
@@ -916,15 +1075,16 @@ def load_ramp(spec: str, edges: int) -> str:
 
 def load_commands(args, out: pathlib.Path) -> list[dict]:
     """--load-listeners needletail-load listeners for each serving edge of
-    each --load-sites site, from the site's load host: listener i starts at
-    edge i mod n, so each edge gets its share."""
+    each --load-sites site, from the site's load host, asking the site's
+    entry points (/api/assignment) as real clients do; with --load-direct
+    listener i starts at edge i mod n."""
     if args.load_listeners <= 0 and not args.load_ramp:
         return []
     items = []
     for site in [item for item in args.load_sites.split(",") if item]:
         if site not in LOAD_HOSTS:
             raise SystemExit(f"--load-sites: no load host in {site}")
-        edges = lab.edges(site)
+        edges = planned_nodes(args, "edge", site)
         targets = [f"{lab.node(name)['public_ipv4']}:{CLIENT_UDP_PORT}" for name in edges]
         count = args.load_listeners * len(edges)
         ramp = load_ramp(args.load_ramp, len(edges)) if args.load_ramp else f"{count}@0"
@@ -932,11 +1092,13 @@ def load_commands(args, out: pathlib.Path) -> list[dict]:
         # needletail-load takes --edges or --entry, never both: the edges
         # only without entry points.
         assign = ["--edges", ",".join(targets)]
-        if getattr(args, "load_assign", False):
+        if not getattr(args, "load_direct", False):
             # Phase AM 10: every distributor and edge of the site answers
-            # /api/assignment.
+            # /api/assignment; the crowd asks it as real clients do, and a
+            # refused listener is spilled by the entry (integration 6: the
+            # direct crowd re-asked full edges).
             entries = [f"https://{lab.node(name)['public_ipv4']}:{lab.HTTP_PORT}"
-                       for name in [*lab.distributors(site), *edges]]
+                       for name in [*planned_nodes(args, "distributor", site), *edges]]
             assign = ["--entry", ",".join(entries), "--tls-ca", lab.ca_file(),
                       "--server-name", lab.SERVER_NAME]
         items.append({"site": site, "host": LOAD_HOSTS[site], "edges": dict(zip(targets, edges)),
@@ -1346,10 +1508,55 @@ def load_report(items: list[dict]) -> list[dict]:
                         if key in row}
                         for edge, row in (summary.get("per_edge") or {}).items()},
                     "saturated": summary.get("load_host_saturated"),
+                    **busy_reasks(pathlib.Path(item["out"]) / "intervals.jsonl",
+                                  total.get("listeners_started"), summary.get("duration_s")),
                     **{key: slim(summary.get(key)) for key in (
                         "paths", "spare", "listeners_interrupted", "listeners_with_missing",
                         "longest_silence_ms", "never_resumed", "bytes_per_listener_second")
                        if key in summary}})
+    return out
+
+
+def busy_reasks(path: pathlib.Path, listeners, duration_s) -> dict:
+    """rm/cpuadmit 156fa2a: the crowd's re-asks put off by its back-off
+    after edge-busy/edge-full, from needletail-load's interval lines (each
+    a delta; summary.json does not carry them): {"busy_reasks": total,
+    "busy_reasks_per_listener_10s": over the run, "_max": the worst
+    interval's, per active listener, scaled to 10 s}. A refused crowd that
+    backs off re-asks a few times per listener per 10 s, not hundreds. {}
+    when the tool says nothing (a build before 156fa2a)."""
+    total, worst, seen, last_t = 0, None, False, 0.0
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        counts = row.get("total") if isinstance(row, dict) else None
+        if not isinstance(counts, dict) or not isinstance(counts.get("busy_reasks"), int):
+            continue
+        seen = True
+        value = counts["busy_reasks"]
+        total += value
+        t = row.get("t") if isinstance(row.get("t"), (int, float)) else None
+        active = counts.get("active") or counts.get("up")
+        if row.get("phase") != "final" and t is not None and t > last_t \
+                and isinstance(active, int) and active > 0:
+            rate = value / active * 10.0 / (t - last_t)
+            worst = rate if worst is None else max(worst, rate)
+        if t is not None:
+            last_t = t
+    if not seen:
+        return {}
+    out = {"busy_reasks": total}
+    if isinstance(listeners, int) and listeners > 0 and isinstance(duration_s, (int, float)) \
+            and duration_s > 0:
+        out["busy_reasks_per_listener_10s"] = round(total / listeners * 10.0 / duration_s, 2)
+    if worst is not None:
+        out["busy_reasks_per_listener_10s_max"] = round(worst, 2)
     return out
 
 
@@ -1377,6 +1584,10 @@ def load_lines(report: list[dict]) -> list[str]:
         lines.append(f"  {item['site']}: {item['per_edge']} a edge (ramp {item['ramp']}), "
                      f"saturated {item.get('saturated')}: "
                      + " ".join(f"{key} {dist(value)}" for key, value in total.items()))
+        if "busy_reasks" in item:
+            lines.append(f"    busy re-asks {item['busy_reasks']} (per listener per 10 s "
+                         f"{item.get('busy_reasks_per_listener_10s')}, worst interval "
+                         f"{item.get('busy_reasks_per_listener_10s_max')})")
         for edge, row in sorted(item["edges"].items()):
             lines.append(f"    {edge:<11} " + " ".join(f"{key} {dist(value)}"
                                                     for key, value in row.items()))
@@ -1986,13 +2197,14 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             handle = open(pathlib.Path(item["out"]) / "load.log", "ab")
             handles.append(handle)
             load_processes.append(subprocess.Popen(
-                lab.enter(item["host"]) + item["command"], stdout=handle, stderr=handle,
-                stdin=subprocess.DEVNULL, start_new_session=True))
+                client_prefix(args, item["host"], "load") + item["command"], stdout=handle,
+                stderr=handle, stdin=subprocess.DEVNULL, start_new_session=True))
         readers += load_processes
         for item in steps["readers"]:
             handle = open(out / f"{item['host']}.{item['lane']}.log", "ab")
             handles.append(handle)
-            readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=handle,
+            readers.append(subprocess.Popen(client_prefix(args, item["host"], "client")
+                                            + item["command"], stdout=handle,
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
         for item in steps["udp_clients"] + video["viewers"]:
@@ -2001,10 +2213,48 @@ def measure(args, steps: dict, out: pathlib.Path) -> tuple[dict, list[dict], int
             handle = open(log_path, "ab")
             stdout = open(item["report"], "wb") if item["kind"] == "udp" else handle
             handles += [handle, stdout]
-            readers.append(subprocess.Popen(lab.enter(item["host"]) + item["command"], stdout=stdout,
+            readers.append(subprocess.Popen(client_prefix(args, item["host"], "client")
+                                            + item["command"], stdout=stdout,
                                             stderr=handle, stdin=subprocess.DEVNULL,
                                             start_new_session=True))
         log(f"{len(readers)} reader processes for {args.seconds} s")
+        if loads or steps["readers"] or steps["udp_clients"] or video["viewers"]:
+            # Every pass (integration 6): each client's CPU and run-queue
+            # wait, its own UDP sockets' drops, and each client namespace's
+            # UDP drops over the window. A 4K viewer that waits behind the
+            # other clients measures the host, not the mesh: a site whose
+            # clients dropped is unreadable for that pass.
+            import threading
+            named = ([("load", item["host"], proc) for item, proc in zip(loads, load_processes)]
+                     + [(client_kind(item), item["host"], proc)
+                        for item, proc in zip(steps["readers"] + steps["udp_clients"]
+                                              + video["viewers"],
+                                              readers[len(load_processes):])])
+            hosts = sorted({host for _, host, _ in named})
+            before = {host: namespace_udp(host) for host in hosts}
+            first = {proc.pid: schedstat(proc.pid) for _, _, proc in named}
+
+            def record_clients() -> None:
+                time.sleep(max(1.0, args.seconds - 2))
+                last = {proc.pid: schedstat(proc.pid) for _, _, proc in named}
+                after = {host: namespace_udp(host) for host in hosts}
+                rows = []
+                for kind, host, proc in named:
+                    a, b = first.get(proc.pid), last.get(proc.pid)
+                    row = {"kind": kind, "host": host, "pid": proc.pid,
+                           "socket_drops": socket_drops(proc.pid)}
+                    if a and b:
+                        row.update({"cpu_s": round((b[0] - a[0]) / 1e9, 3),
+                                    "wait_s": round((b[1] - a[1]) / 1e9, 3)})
+                    rows.append(row)
+                drops = {host: {key: after[host].get(key, 0) - before[host].get(key, 0)
+                                for key in ("RcvbufErrors", "InErrors", "InDatagrams")}
+                         for host in hosts if before.get(host) and after.get(host)}
+                (out / "client-cpu.json").write_text(json.dumps(
+                    {"window_s": args.seconds - 2, "split": lab.rest_split(lab.load("cpus.json")),
+                     "processes": rows, "namespace_udp": drops}, indent=1) + "\n")
+
+            threading.Thread(target=record_clients, daemon=True).start()
         if args.stall_edge:
             import threading
             began = began_us / 1e6

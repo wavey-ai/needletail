@@ -104,16 +104,37 @@ class Slots(Base):
         calls = []
         with mock.patch.object(lab, "http_json", lambda name, path, method="GET", body=None:
                                calls.append((name, path, method, body)) or (200, {})), \
-                mock.patch.object(sys, "argv", ["edge_lab.py", "drain", "lon-edge-2"]), \
+                mock.patch.object(sys, "argv", ["edge_lab.py", "drain", "lon-edge-2",
+                                                "--no-room-check"]), \
                 redirect_stdout(io.StringIO()):
             lab.main()
         self.assertEqual(calls, [("lon-edge-2", "/api/control/drain-node", "POST",
                                   {"node_id": "lon-edge-2"})])
 
+    def test_drain_checks_the_room_through_the_engine(self):
+        """tools6: `drain NODE` goes through mesh_ops.drain (room first),
+        `--surge` passed on; its exit status is the engine's."""
+        seen = []
+
+        def engine_drain(ops, name, surge=False, options=None, **kwargs):
+            seen.append((name, surge, options.gate_timeout_s))
+            return 2
+
+        for argv, surge in ((["drain", "lon-edge-2"], False),
+                            (["drain", "lon-edge-2", "--surge"], True)):
+            with mock.patch.object(lab.mesh_ops, "drain", engine_drain), \
+                    mock.patch.object(lab, "EdgeLabOps", lambda: object()), \
+                    mock.patch.object(sys, "argv", ["edge_lab.py", *argv]), \
+                    self.assertRaises(SystemExit) as caught:
+                lab.main()
+            self.assertEqual(caught.exception.code, 2)
+            self.assertEqual(seen[-1], ("lon-edge-2", surge, 30.0))
+
     def test_drain_answered_202_is_a_success(self):
         # av-mesh queues a control command and answers 202 Accepted.
         with mock.patch.object(lab, "http_json", lambda *a, **k: (202, {"status": "queued"})), \
-                mock.patch.object(sys, "argv", ["edge_lab.py", "drain", "lon-edge-2"]), \
+                mock.patch.object(sys, "argv", ["edge_lab.py", "drain", "lon-edge-2",
+                                                "--no-room-check"]), \
                 redirect_stdout(io.StringIO()):
             lab.main()  # no SystemExit
         with mock.patch.object(lab, "http_json", lambda *a, **k: (503, {})), \

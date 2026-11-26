@@ -3903,3 +3903,43 @@ class Schedule(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DrainRoom(unittest.TestCase):
+    """tools6 (local proof 3): the plain drain of a scenario checks the room
+    on the site's other serving edges first (mesh_ops.load_room), from one
+    /api/node of each; "room": "ignore" drains anyway."""
+
+    def document(self, load, legs, ready=True, draining=False):
+        return {"state": "ready" if ready else "starting", "ready": ready,
+                "drain_reasons": ["operator"] if draining else [],
+                "client_udp": {"subscribers": legs, "hls_sessions": 0, "load_permille": load}}
+
+    def test_no_room_is_refused_with_the_numbers(self):
+        state = lab()
+        loads = {"lon-edge-1": (700, 40), "lon-edge-2": (843, 50), "lon-edge-3": (879, 52),
+                 "lon-edge-4": (790, 45), "lon-edge-5": (0, 0, False)}
+        documents = {name: self.document(*value) for name, value in loads.items()}
+
+        def fetch(node):
+            return documents.get(node["name"], {"error": "no answer"})
+
+        problems = scale.drain_room_problems(state, "lon-edge-1", fetch)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("capacity: no room: lon-edge-1 carries 700‰", problems[0])
+        self.assertIn("have 10‰ of room under the 800‰ target (lon-edge-2 843‰, "
+                      "lon-edge-3 879‰, lon-edge-4 790‰)", problems[0])
+        documents["lon-edge-1"] = self.document(100, 5)
+        self.assertEqual(len(scale.drain_room_problems(state, "lon-edge-1", fetch)), 1)
+        documents["lon-edge-2"] = self.document(600, 30)
+        self.assertEqual(scale.drain_room_problems(state, "lon-edge-1", fetch), [])
+        # A draining edge is no room; an edge that serves nobody needs none.
+        documents["lon-edge-4"] = self.document(0, 0, draining=True)
+        documents["lon-edge-1"] = self.document(30, 0)
+        self.assertEqual(scale.drain_room_problems(state, "lon-edge-1", fetch), [])
+        # A forwarder's drain is not judged by room.
+        self.assertEqual(scale.drain_room_problems(state, "lon-dist-a", fetch), [])
+        # A figure not served (an older build, no answer) is no refusal here.
+        self.assertEqual(scale.drain_room_problems(state, "lon-edge-1", lambda node: {}), [])
+        self.assertEqual(scale.drain_room_problems(
+            state, "lon-edge-1", lambda node: {"ready": True, "state": "ready"}), [])

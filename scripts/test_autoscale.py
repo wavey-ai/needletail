@@ -32,6 +32,7 @@ import os
 import pathlib
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -99,6 +100,9 @@ class Sim(auto.Backend):
         # Prints as the lab tool does (its "Adding ..." and "created ...").
         self.chatty = False
         self.start_gate: threading.Event | None = None
+        # {node: how many more starts or pushes end unwarmed} (the deploy's
+        # exit 6: everything else done, the warm record not complete).
+        self.unwarmed: dict[str, int] = {}
         self.stop_gate: threading.Event | None = None
         self.known: dict[str, int] = {}            # host -> the key ssh learned
         self.forgotten: list[str] = []
@@ -211,6 +215,9 @@ class Sim(auto.Backend):
                 "leaving": 0, "single_legs": node["udp"], "legs_by_other": {},
                 "moves_completed": 0, "moves_expired": 0, "moves_taken_back": 0,
                 "redundant_refusals": 0}
+            if node.get("nothing_to_shed") is not None:
+                document["cpu_admit"] = {"load_permille": 1000, "shedding": True,
+                                         "nothing_to_shed": node["nothing_to_shed"]}
         return document
 
     def assignment(self, site: str):
@@ -276,12 +283,27 @@ class Sim(auto.Backend):
         self.record("push", ",".join(names))
         for name in names:
             self.nodes[name].update(running=True, crashed_unix=None, unpushed=False)
+        self.warm_or_raise(names)
 
     def start(self, name):
         self.record("start", name)
         if self.start_gate is not None:
             self.start_gate.wait(30)
         self.nodes[name].update(running=True, unpushed=False)
+        self.warm_or_raise([name])
+
+    def warm_or_raise(self, names):
+        cold = [name for name in names if self.unwarmed.get(name, 0) > 0]
+        for name in cold:
+            self.unwarmed[name] -= 1
+            # A node without a complete warm record is never ready (its
+            # service waits for the record).
+            self.nodes[name].update(ready=False, cold=True)
+        for name in names:
+            if name not in cold and self.nodes[name].pop("cold", False):
+                self.nodes[name]["ready"] = True
+        if cold:
+            raise auto.Unwarmed(f"UNWARMED: {', '.join(cold)}: no complete warm record")
 
     def stop(self, name):
         self.record("stop", name)
@@ -431,6 +453,43 @@ class Decide(Base):
         self.assertEqual(third[0]["targets"], [("lon-edge-6", "start"), ("lon-edge-7", "start")])
         self.assertEqual(self.mutating(), [("start", "lon-edge-6"), ("start", "lon-edge-7")])
 
+    def test_an_unwarmed_standby_is_not_ready_and_its_check_runs_again(self):
+        """The deploy's start exits 6 (the node started, its warm record not
+        complete): the join does not count it as ready; a push of it runs
+        its check again (its activation stops the service first), and it
+        serves once that push ends warm. --allow-unwarmed is never asked."""
+        self.sim.unwarmed["lon-edge-6"] = 1
+        controller = self.controller()
+        self.sim.set_load(760)
+        self.ticks(controller, 3)
+        self.assertEqual(self.touching("lon-edge-6"), [("start", "lon-edge-6")])
+        self.ticks(controller, 1)
+        unwarmed = self.of("unwarmed")
+        self.assertEqual([(item["node"], item["rerun"]) for item in unwarmed],
+                         [("lon-edge-6", 1)])
+        # Not serving though its service runs: its check runs again.
+        self.assertNotIn("lon-edge-6", [item["node"] for item in self.of("serving")])
+        self.assertEqual(self.touching("lon-edge-6"), [("start", "lon-edge-6"),
+                                                      ("push", "lon-edge-6")])
+        self.ticks(controller, 2)
+        self.assertIn("lon-edge-6", [item["node"] for item in self.of("serving")])
+        self.assertEqual(len(self.touching("lon-edge-6")), 2)
+        self.assertEqual([item for item in self.of("failure") if item["node"] == "lon-edge-6"],
+                         [])
+
+    def test_a_node_that_stays_unwarmed_fails_its_join_and_is_parked(self):
+        self.sim.unwarmed["lon-edge-6"] = 10
+        controller = self.controller()
+        self.sim.set_load(760)
+        self.ticks(controller, 8)
+        self.assertEqual(self.touching("lon-edge-6"),
+                         [("start", "lon-edge-6"), ("push", "lon-edge-6"),
+                          ("push", "lon-edge-6"), ("stop", "lon-edge-6")])
+        self.assertEqual(len(self.of("unwarmed")), auto.WARM_RERUNS)
+        failures = [item for item in self.of("failure") if item["node"] == "lon-edge-6"]
+        self.assertEqual([item["what"] for item in failures], ["warm"])
+        self.assertNotIn("lon-edge-6", [item["node"] for item in self.of("serving")])
+
     def test_the_band_between_450_and_700_does_nothing(self):
         controller = self.controller()
         for load in (460, 600, 699, 520):
@@ -526,6 +585,45 @@ class Decide(Base):
         self.assertEqual(decisions[0][0]["action"], "join")
         self.assertEqual(decisions[0][0]["targets"], [("lon-edge-6", "start")])
 
+    def test_an_edge_with_nothing_to_shed_adds_an_edge_in_one_sample(self):
+        """rm/cpuadmit 156fa2a: an edge over its CPU full point with no
+        two-leg listener to shed says cpu_admit.nothing_to_shed in /api/node;
+        one sample adds an edge, with the region's mean (500) far under the
+        band, and no scale-down while it says so. Without it (false, or a
+        build that says nothing) the mean decides as before."""
+        controller = self.controller()
+        self.sim.set_load(500)
+        self.sim.nodes["lon-edge-3"]["nothing_to_shed"] = False
+        decisions = self.ticks(controller, 2)
+        self.assertTrue(all(item[0]["action"] == "hold" for item in decisions), decisions)
+        self.assertEqual(decisions[-1][0]["inputs"]["nothing_to_shed"], [])
+        self.sim.nodes["lon-edge-3"]["nothing_to_shed"] = True
+        (decision,), = self.ticks(controller, 1)
+        self.assertEqual(decision["action"], "join", decision)
+        self.assertEqual(decision["targets"], [("lon-edge-6", "start")])
+        self.assertIn("lon-edge-3 over CPU full with nothing to shed", decision["reason"])
+        self.assertEqual(decision["inputs"]["nothing_to_shed"], ["lon-edge-3"])
+        self.assertEqual(decision["inputs"]["mean_permille"], 500)
+
+    def test_nothing_to_shed_blocks_a_scale_down(self):
+        for index in range(6, 9):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.nodes["lon-edge-2"]["nothing_to_shed"] = True
+        controller = self.controller()
+        self.sim.set_load(300)
+        # The low load would drain after 300 s; the edge with nothing to
+        # shed asks for one more instead (8 serving, the roster's 9th).
+        decisions = self.ticks(controller, 160)
+        self.assertNotIn("drain", [item[0]["action"] for item in decisions])
+        self.assertEqual(decisions[0][0]["action"], "join", decisions[0])
+
+    def test_node_view_reads_nothing_to_shed(self):
+        view = auto.node_view
+        self.assertIsNone(auto.nothing_to_shed({}))
+        self.assertIsNone(auto.nothing_to_shed({"cpu_admit": {"load_permille": 900}}))
+        self.assertTrue(auto.nothing_to_shed({"cpu_admit": {"nothing_to_shed": True}}))
+        self.assertIsNone(view("lon-edge-1", None)["nothing_to_shed"])
+
     def test_after_the_standby_edges_a_slot_is_created_then_pushed(self):
         for index in range(6, 11):
             self.sim.nodes[f"lon-edge-{index}"]["running"] = True
@@ -577,6 +675,27 @@ class Decide(Base):
         self.assertEqual(drained[0]["inputs"]["victim_listeners"], 7)
         self.assertGreaterEqual(drained[0]["inputs"]["low_for_s"], 300)
         self.assertLessEqual(drained[0]["inputs"]["projected_one_fewer"], 450)
+
+    def test_scale_down_never_drains_into_no_room(self):
+        """tools6: even when the mean with one edge fewer is under the
+        band (here a band of 900 a test sets), the victim is drained only
+        when the other serving edges have room for its load under the
+        rebalance target (800): seven others at 750 have 350 for its 750."""
+        for index in range(6, 9):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        controller = self.controller(config=auto.Config(down_permille=900, up_permille=950,
+                                                        up_max_permille=990))
+        self.sim.set_load(750)
+        self.sim.nodes["lon-edge-3"]["udp"] = 7
+        decisions = self.ticks(controller, 200)
+        self.assertEqual(self.mutating(), [])
+        held = [item[0] for item in decisions if item[0]["reason"].startswith("no room")]
+        self.assertTrue(held)
+        self.assertIn("no room to drain lon-edge-3: it carries 750 permille, the other serving "
+                      "edges have 350 under 800", held[-1]["reason"])
+        self.assertEqual(held[-1]["inputs"]["room"]["victim"], "lon-edge-3")
+        self.assertEqual(auto.no_room("a", {"a": 300, "b": 500}), None)
+        self.assertEqual(auto.no_room("a", {"a": 300, "b": 600})["room_permille"], 200)
 
     def test_never_fewer_than_three_edges(self):
         """B's seam: a listener holds two edges and needs a third to move
@@ -1394,6 +1513,50 @@ class Lost(Base):
         self.assertEqual(self.sim.forgotten, ["lon-edge-11"])
         self.assertEqual(self.of("recovered")[0]["node"], "lon-edge-11")
 
+    def rebuilt_slot(self, unwarmed: int):
+        """A lost slot whose ssh stays down is rebuilt and pushed; that push
+        ends unwarmed `unwarmed` times (the deploy's exit 6)."""
+        node = self.sim.nodes["lon-edge-11"]
+        node.update(created=True, running=True)
+        controller = self.controller()
+        self.ticks(controller, 2)
+        self.crash("lon-edge-11")
+        node["ssh"] = False
+        self.sim.unwarmed["lon-edge-11"] = unwarmed
+        self.lost_at(controller, "lon-edge-11")
+        for _ in range(80):
+            self.ticks(controller, 1)
+            if ("rebuild", "lon-edge-11") in self.mutating():
+                break
+        self.assertIn(("rebuild", "lon-edge-11"), self.mutating())
+        node.update(instance="running", ssh=True)
+        return controller
+
+    def test_an_unwarmed_push_after_a_rebuild_runs_the_check_again(self):
+        """tools6: the recovery's push after a rebuild exits 6 once: not a
+        failed step; its check runs again (another push), then the node is
+        recovered."""
+        controller = self.rebuilt_slot(unwarmed=1)
+        self.ticks(controller, 12)
+        self.assertEqual(self.touching("lon-edge-11"), [("rebuild", "lon-edge-11"),
+                                                        ("push", "lon-edge-11"),
+                                                        ("push", "lon-edge-11")])
+        unwarmed = [item for item in self.of("unwarmed") if item["node"] == "lon-edge-11"]
+        self.assertEqual([(item["rerun"], item["step"]) for item in unwarmed], [(1, "rebuild")])
+        self.assertEqual(self.of("recover_failed"), [])
+        self.assertEqual(self.of("recovered")[0]["node"], "lon-edge-11")
+
+    def test_a_rebuilt_node_that_stays_unwarmed_fails_its_recovery_on_warm(self):
+        controller = self.rebuilt_slot(unwarmed=10)
+        self.ticks(controller, 20)
+        pushes = [call for call in self.touching("lon-edge-11") if call[0] == "push"]
+        self.assertEqual(len(pushes), 1 + auto.WARM_RERUNS)
+        failed = self.of("recover_failed")
+        self.assertEqual([item["node"] for item in failed], ["lon-edge-11"])
+        self.assertTrue(failed[0]["why"].startswith("warm: no complete warm record after 2"),
+                        failed[0]["why"])
+        self.assertEqual(self.of("recovered"), [])
+
     def test_more_than_two_newly_silent_across_the_mesh_is_blind(self):
         """One node silent in each of three sites in one tick: the mesh,
         not three nodes, is in doubt (the operator's own path): blind
@@ -1738,6 +1901,17 @@ class Scale(Base):
         self.assertEqual(self.touching("lon-dist-c")[2:], [("drain", "lon-dist-c"),
                                                            ("stop", "lon-dist-c")])
         self.assertTrue(self.of("gate")[-1]["ok"])
+
+    def test_scale_down_is_refused_without_room_and_prints_no_mark(self):
+        for index in range(6, 8):
+            self.sim.nodes[f"lon-edge-{index}"]["running"] = True
+        self.sim.set_load(780)
+        self.sim.nodes["lon-edge-4"]["udp"] = 3
+        controller = self.controller()
+        with self.assertRaises(auto.Refused) as caught:
+            self.run_scale(controller, "down")
+        self.assertIn("no room to drain lon-edge-4: it carries 780 permille", str(caught.exception))
+        self.assertEqual(self.mutating(), [])
 
     def test_scale_down_never_below_three_edges_and_prints_no_mark(self):
         for index in (4, 5):
@@ -2329,6 +2503,33 @@ class LinodeBackendTests(unittest.TestCase):
         # One push of the batch; the controller, not the deploy, decides
         # what a slow host costs its slots.
         self.assertEqual(deployed, [("push", "lon-edge-1,lon-edge-2", "--slow-host", "report")])
+
+    def test_the_deploy_s_exit_6_is_unwarmed_never_allowed(self):
+        """A start or push that exits 6 (EXIT_UNWARMED) is Unwarmed, not a
+        failed step; any other failure stays a RuntimeError, and the
+        controller never asks the deploy for --allow-unwarmed."""
+        commands = []
+
+        def child(code):
+            def run_child(command, timeout):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, code, "", "UNWARMED: lon-edge-6")
+            return run_child
+
+        with mock.patch.object(self.backend, "run_child", child(auto.DEPLOY_EXIT_UNWARMED)):
+            with self.assertRaises(auto.Unwarmed):
+                self.backend.start("lon-edge-6")
+            with self.assertRaises(auto.Unwarmed):
+                self.backend.deploy("push", "lon-edge-6", "--slow-host", "report")
+            # stop's exit 6 is no warm verdict.
+            with self.assertRaises(RuntimeError) as caught:
+                self.backend.stop("lon-edge-6")
+            self.assertNotIsInstance(caught.exception, auto.Unwarmed)
+        with mock.patch.object(self.backend, "run_child", child(1)):
+            with self.assertRaises(RuntimeError) as caught:
+                self.backend.start("lon-edge-6")
+            self.assertNotIsInstance(caught.exception, auto.Unwarmed)
+        self.assertTrue(all("--allow-unwarmed" not in command for command in commands))
 
     def test_a_state_without_a_run_tag_is_refused(self):
         self.state["tag"] = ""

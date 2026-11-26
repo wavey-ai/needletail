@@ -232,8 +232,9 @@ class Files(unittest.TestCase):
         serving edges and one standby a region), as the one-lab proving run
         of 24 Nov has it (the referee's -nano probe host a region, two
         g6-dedicated-8 listener hosts in London for the capacity curve, one
-        g6-dedicated-4 elsewhere): 45 nodes at $3.510 an hour, the eight
-        slots $0.432 more if all exist."""
+        g6-dedicated-4 elsewhere): 45 nodes at $3.834 an hour (tools6:
+        London's first-hop forwarders on g6-dedicated-8, their heavy egress
+        at 247 Mbit/s), the eight slots $0.432 more if all exist."""
         topology = json.loads((FILES / "topology-proving.json").read_text())
         self.assertEqual(topology["nodes"][0]["site"], "sydney")
         self.assertTrue(all(node["type"].startswith("g6-dedicated-") for node in topology["nodes"]))
@@ -244,7 +245,8 @@ class Files(unittest.TestCase):
             roles[key] = roles.get(key, 0) + 1
         self.assertEqual(roles, {("contributor", "g6-dedicated-4"): 2,
                                  ("source", "g6-dedicated-4"): 1,
-                                 ("distributor", "g6-dedicated-2"): 8,
+                                 ("distributor", "g6-dedicated-2"): 6,
+                                 ("distributor", "g6-dedicated-8"): 2,
                                  ("edge", "g6-dedicated-2"): 16,
                                  ("listeners", "g6-dedicated-8"): 2,
                                  ("listeners", "g6-dedicated-4"): 3,
@@ -259,7 +261,7 @@ class Files(unittest.TestCase):
         hourly, problems = lab_tool.topology_cost({**topology, "nodes": created},
                                                   LabTool.TYPES, LabTool.REGIONS)
         self.assertEqual(problems, [])
-        self.assertAlmostEqual(hourly, 3.510, places=3)
+        self.assertAlmostEqual(hourly, 3.834, places=3)
         every, _ = lab_tool.topology_cost(topology, LabTool.TYPES, LabTool.REGIONS)
         self.assertAlmostEqual(every - hourly, 8 * 0.054, places=3)
         self.assertEqual(topology["standby_edges"],
@@ -280,18 +282,18 @@ class Files(unittest.TestCase):
         # The run's ceilings (C 7, with the agreed edges): every node and
         # slot, and their hourly price; `up` itself counts the 45 it creates.
         with mock.patch.object(lab_tool, "MAX_NODES", 53), \
-                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 3.95):
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 4.30):
             _topology, checked = lab_tool.validate_topology(FakeTypesApi(), topology)
-        self.assertAlmostEqual(checked, 3.510, places=3)
+        self.assertAlmostEqual(checked, 3.834, places=3)
         with mock.patch.object(lab_tool, "MAX_NODES", 44), \
-                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 3.95), \
+                mock.patch.object(lab_tool, "MAX_HOURLY_USD", 4.30), \
                 self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
             lab_tool.validate_topology(FakeTypesApi(), topology)
         # The file states its price and the ceilings it is run under
         # (review of CT5, finding 3).
-        self.assertIn("Up creates 45 nodes at $3.510 an hour; with every slot 53 nodes at "
-                      "$3.942, so the lab's ceilings are NEEDLETAIL_LINODE_MAX_NODES=53 and "
-                      "NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95 or more.", topology["description"])
+        self.assertIn("Up creates 45 nodes at $3.834 an hour; with every slot 53 nodes at "
+                      "$4.266, so the lab's ceilings are NEEDLETAIL_LINODE_MAX_NODES=53 and "
+                      "NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30 or more.", topology["description"])
         # The variant without Sydney (lab up --without-sites sydney, or
         # --optional-sites sydney when its core is refused); no -syd2 file.
         self.assertEqual(sorted(scale_topology.VARIANTS),
@@ -300,7 +302,7 @@ class Files(unittest.TestCase):
         three = lab_tool.created_part(lab_tool.without_sites(topology, ["sydney"]))
         hourly, _ = lab_tool.topology_cost(three, LabTool.TYPES, LabTool.REGIONS)
         self.assertEqual(len(three["nodes"]), 35)
-        self.assertAlmostEqual(hourly, 2.808, places=3)
+        self.assertAlmostEqual(hourly, 3.132, places=3)
 
     def test_every_file_states_its_price_from_the_lab_tool(self):
         """Each committed file's description gives what `up` creates and
@@ -463,8 +465,8 @@ class Party(unittest.TestCase):
         # run's 5 billed hours (one lab) of its 53 nodes and slots.
         self.assertEqual(plan["billed_hours"], 4)
         self.assertAlmostEqual(plan["run_usd"], 4 * 19.062, places=3)
-        self.assertAlmostEqual(plan["proving_usd"], 5 * (3.510 + 0.432), places=3)
-        self.assertAlmostEqual(plan["left_usd"], 300 - 63.48 - 38.50 - 5 * 3.942, places=3)
+        self.assertAlmostEqual(plan["proving_usd"], 5 * (3.834 + 0.432), places=3)
+        self.assertAlmostEqual(plan["left_usd"], 300 - 63.48 - 38.50 - 5 * 4.266, places=3)
         self.assertTrue(plan["fits_budget"])
         self.assertEqual(plan["max_edges_per_forwarder"], 40)
         self.assertEqual(plan["max_nodes"], 226 + 12)
@@ -481,7 +483,7 @@ class Party(unittest.TestCase):
         text = scale_topology.plan_text(base)
         for figure in ("400,000", "0.70", "1.031", "1.2 Mbit/s", "0.0055", "271 legs",
                        "g6-dedicated-8", "$7.182 an hour", "266 vCPUs", "Gbit/s",
-                       "GB an hour", "$178.31 left", "NEEDLETAIL_LINODE_MAX_NODES=95"):
+                       "GB an hour", "$176.69 left", "NEEDLETAIL_LINODE_MAX_NODES=95"):
             self.assertIn(figure, text)
         for key, value, moved in (("edge_datagrams_per_s", 200_000, "serving_edges"),
                                   ("edge_fill", 0.35, "serving_edges"),
@@ -627,8 +629,71 @@ class Base(unittest.TestCase):
             return deploy.load_settings(list(overrides))
 
 
+def primary_promotion_problems(full: dict, plan: dict, args: dict, part_repair: bool) -> list:
+    """M5 of the 4k-repair review: every fast-plane child (rendered with
+    --relay-controlled-local) whose primary lane is `source`, or that is a
+    lease child, takes --relay-primary-promoted exactly once, for answers,
+    link repair and regenerated sources from its primary carry repair
+    intent; with relay_part_repair=false a compiled child whose source
+    lane's parent is not a contributor takes none. A problem a node."""
+    services = {item["node_id"]: item for item in plan["services"]
+                if item["service"] == "av_mesh"}
+    contributors = {deploy.relay_node_id(node) for node in deploy.common.contributors(full)}
+    problems = []
+    for name, node_args in sorted(args.items()):
+        if "--relay-controlled-local" not in node_args:
+            continue
+        count = node_args.count("--relay-primary-promoted")
+        service = services.get(deploy.relay_node_id(full["nodes"][name]))
+        primary = (service or {}).get("primary_parent") or {}
+        lane = primary.get("lane", "lease")
+        wanted = 1
+        if (not part_repair and lane == "source"
+                and primary.get("parent_node_id") not in contributors):
+            wanted = 0
+        if count != wanted and not (not part_repair and lane == "source" and count <= 1):
+            problems.append(f"{name} (primary lane {lane}): --relay-primary-promoted x{count}")
+        if count > 1:
+            problems.append(f"{name}: --relay-primary-promoted x{count}")
+    return problems
+
+
 @unittest.skipUnless(COMPILER.is_file(), "needs target/release/needletail-compile")
 class Render(Base):
+    def test_every_source_lane_child_admits_repair_from_its_primary(self):
+        """Every topology the deploy renders, legacy and merged, its standby
+        edges and every autoscale slot created (held out or in service)."""
+        topologies = sorted(FILES.glob("topology-*.json"))
+        self.assertGreaterEqual(len(topologies), 5)
+        checked = set()
+        for path in topologies:
+            topology = json.loads(path.read_text())
+            slots = tuple(lab_tool.slot_specs(topology))
+            standby = [node["name"] for node in topology["nodes"]
+                       if node["role"] == "edge" and node.get("standby")]
+            for mode in ("merged", "legacy"):
+                for created, held in (((), []), (slots, list(standby) + list(slots))):
+                    for part_repair in (True, False):
+                        overrides = [f"topology={mode}",
+                                     f"relay_part_repair={'true' if part_repair else 'false'}"]
+                        if held:
+                            overrides.append(f"standby_edges={json.dumps(held)}")
+                        label = (path.name, mode, bool(created), part_repair)
+                        with self.subTest(label):
+                            try:
+                                full, plan, args = self.render(
+                                    path, overrides, topology_state(topology, created))
+                            except (ValueError, SystemExit) as error:
+                                # A topology one mode does not take (refused
+                                # as the deploy refuses it): not rendered.
+                                self.assertIn(mode, ("legacy", "merged"), error)
+                                continue
+                            checked.add(path.name)
+                            self.assertEqual(primary_promotion_problems(
+                                self.active, plan, args, part_repair), [])
+        self.assertIn("topology-scale.json", checked)
+        self.assertIn("topology-proving.json", checked)
+
     def render(self, path: pathlib.Path, overrides=(), state: dict | None = None):
         settings = self.settings(overrides)
         full = state or topology_state(json.loads(path.read_text()))
@@ -977,6 +1042,35 @@ class FakeHosts:
         self.drained: set[str] = set()
         # The engine's clock: a node's boot id is the activation's time on it.
         self.clock = time.time
+        # The check unit at boot (needletail-node-check.service): it writes
+        # this boot's warm record when it runs with needletail-nodecheck in
+        # /usr/local/bin; on a host of `no_warm_record` it writes none (its
+        # nodecheck dies), on one of `warm_incomplete` one not complete.
+        self.no_warm_record: set[str] = set()
+        self.warm_incomplete: set[str] = set()
+        self.warm_runs: dict[str, int] = {}
+
+    WARM_FILE = "/run/needletail/node-warm.json"
+    NODECHECK = "/usr/local/bin/needletail-nodecheck"
+    CHECK_UNIT = "/etc/systemd/system/needletail-node-check.service"
+
+    def warm_record_complete(self, name: str) -> bool:
+        return b'"complete": true' in self.fs(name).get(self.WARM_FILE, b"")
+
+    def run_check(self, name: str) -> None:
+        """The check unit runs: a record only with nodecheck in place."""
+        files = self.fs(name)
+        self.warm_runs[name] = self.warm_runs.get(name, 0) + 1
+        if self.NODECHECK not in files or name in self.no_warm_record:
+            return
+        complete = name not in self.warm_incomplete
+        files[self.WARM_FILE] = json.dumps({
+            "schema": "needletail.node-warm.v2", "complete": complete,
+            "verdict": "ok" if complete else "warm-timeout",
+            "unix_us": int(time.time() * 1e6), "slow_host": False, "slow_reasons": [],
+            "warm": {"ran": True, "finished": complete, "seconds": 12.5,
+                     "worst_page_us": 4000, "touched_mb": 3200, "stalls": []},
+            "check": {}}).encode()
 
     def fs(self, name: str) -> dict[str, bytes]:
         return self.files.setdefault(name, {})
@@ -1014,6 +1108,20 @@ class FakeHosts:
             return f"eth1={node.get('vlan_ipv4')}/24"
         if "systemd-run" in script:
             return self.activate(name, script)
+        if "WantedBy=multi-user.target" in script and "needletail-node-check" in script:
+            # warm_host: its own unit, run unless this boot's record is complete.
+            files[self.CHECK_UNIT] = b"host check"
+            if not self.warm_record_complete(name):
+                self.run_check(name)
+            return ""
+        staged = re.search(r"ln -sfn (/opt/needletail/builds/\S+/needletail-nodecheck)", script)
+        if staged:
+            # warm_staged: the staged build's nodecheck linked, the check run.
+            if staged.group(1) in files:
+                files[self.NODECHECK] = files[staged.group(1)]
+            if not self.warm_record_complete(name):
+                self.run_check(name)
+            return ""
         if script.startswith("cat "):
             return files.get(script.split()[1], b"").decode()
         if "systemctl disable --now" in script:
@@ -1060,6 +1168,8 @@ class FakeHosts:
             files[args + ".failed"] = files[args]
             files[args] = files[source]
         else:
+            if f"{self.ETC}/{service}.check.next" in files:
+                files[self.CHECK_UNIT] = files[f"{self.ETC}/{service}.check.next"]
             if f"{self.ETC}/{service}.unit.next" in files:
                 if unit in files:
                     files[f"{self.ETC}/{service}.unit.prev"] = files[unit]
@@ -1067,6 +1177,14 @@ class FakeHosts:
             if args in files:
                 files[args + ".prev"] = files[args]
             files[args] = files.pop(source)
+            # The build's binaries linked into /usr/local/bin, then the
+            # check run when this boot's record is not complete (before the
+            # service: stopped first when it runs).
+            build = binary.rsplit("/", 1)[0] + "/"
+            for path in [path for path in files if path.startswith(build)]:
+                files["/usr/local/bin/" + path[len(build):]] = files[path]
+            if self.CHECK_UNIT in files and not self.warm_record_complete(name):
+                self.run_check(name)
         self.running[name] = True
         self.boots[name] = int(self.clock() * 1_000_000)
         return result(True)
@@ -1188,13 +1306,13 @@ class FakeLab(Base):
         tools = self.roots / "tools"
         if role == "contributor":
             return [self.roots / "contrib" / "av-contrib", tools / "aep1-48k-probe",
-                    tools / "daw-test-source"]
+                    tools / "needletail-nodecheck", tools / "daw-test-source"]
         if role == "load":
             return [tools / name for name in ("aep1-48k-probe", "needletail-reader",
                                               "needletail-udp-client", "daw-test-source",
                                               "needletail-nodecheck")]
         return [self.roots / "mesh" / "av-mesh", tools / "aep1-48k-probe",
-                tools / "soundkit-part-check"]
+                tools / "soundkit-part-check", tools / "needletail-nodecheck"]
 
     @staticmethod
     def change_state(path, state, change):
@@ -1277,8 +1395,11 @@ class NodesByName(FakeLab):
         self.push()
         self.quietly(deploy.command_start, self.namespace(nodes="lon-edge-6"))
         self.assertEqual(set(self.hosts.touched), {"lon-edge-6"})
+        # The activation, then this boot's warm record read (node_warm).
         self.assertIn("/opt/needletail/activate needletail-mesh",
-                      self.hosts.scripts["lon-edge-6"][-1])
+                      self.hosts.scripts["lon-edge-6"][-2])
+        self.assertEqual(self.hosts.scripts["lon-edge-6"][-1],
+                         "cat /run/needletail/node-warm.json")
         self.assertNotIn("lon-edge-6", self.saved_standby())
         self.assertIn("lon-edge-7", self.saved_standby())
 
@@ -2736,6 +2857,7 @@ class LabTool(unittest.TestCase):
                 mock.patch.object(lab_tool, "add_nodes",
                                   lambda args, api, state, nodes: added.extend(nodes)), \
                 mock.patch.object(lab_tool, "command_status", lambda args: None), \
+                mock.patch.object(lab_tool, "separate_after", lambda *a, **k: None), \
                 redirect_stdout(io.StringIO()):
             lab_tool.command_grow(args)
         # Never an autoscale slot: only `add` creates one.

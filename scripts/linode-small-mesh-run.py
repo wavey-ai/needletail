@@ -96,6 +96,10 @@ done
 port=19444; [ "$service" = needletail-contrib ] && port=19443
 local_json=$(curl -sk --max-time 4 https://127.0.0.1:$port/api/mesh/local 2>/dev/null || true)
 [ -n "$local_json" ] && echo "$local_json" | jq -e . >/dev/null 2>&1 || local_json=null
+node_json=$(curl -sk --max-time 4 https://127.0.0.1:$port/api/node 2>/dev/null | jq -c '{memory: (.memory // null), part_store_bytes: (.part_store_bytes // null), part_store_budget_bytes: (.part_store_budget_bytes // null)}' 2>/dev/null || true)
+[ -n "$node_json" ] || node_json=null
+metrics=
+[ "$service" = needletail-contrib ] && metrics=$(curl -sk --max-time 4 https://127.0.0.1:$port/metrics 2>/dev/null | grep -E '^av_contrib_(relay_asks_answered|relay_answer_symbols|relay_answer_refused|relay_answer_panics|relay_part_store|part_store)' | tr '\n' ';')
 jq -n \
   --argjson timestamp_ns "$(date +%s%N)" \
   --arg service "$service" \
@@ -110,10 +114,16 @@ jq -n \
   --argjson eth1_tx "$(cat /sys/class/net/eth1/statistics/tx_bytes 2>/dev/null || echo 0)" \
   --argjson eth1_rx "$(cat /sys/class/net/eth1/statistics/rx_bytes 2>/dev/null || echo 0)" \
   --argjson mesh "$local_json" \
+  --argjson node "$node_json" \
+  --arg metrics "$metrics" \
   '{timestamp_ns:$timestamp_ns,service:$service,cpu_ns:$cpu_ns,memory_bytes:$memory_bytes,
     restarts:$restarts,cpu_stat:$cpu_stat,udp:$udp,clock:$clock,
     eth0_tx:$eth0_tx,eth0_rx:$eth0_rx,eth1_tx:$eth1_tx,eth1_rx:$eth1_rx,
-    mesh_fec:($mesh.mesh_fec // null),relay_session:($mesh.relay_session // null)}'
+    mesh_fec:($mesh.mesh_fec // null),relay_session:($mesh.relay_session // null),
+    node_memory:($node.memory // null),
+    contrib_part_store:(if $node == null then null else {part_store_bytes:($node.part_store_bytes // $node.memory.part_store_bytes // null),
+      part_store_budget_bytes:($node.part_store_budget_bytes // $node.memory.part_store_budget_bytes // null)} end),
+    contrib_metrics:$metrics}'
 """
 
 
@@ -306,7 +316,28 @@ def node_usage(before: dict, after: dict) -> dict:
                 "fec_recovered_objects", "fec_recovered_source_symbols",
                 "expired_objects", "datagrams_rejected") if key in relay_after
         }
+    repair = repair_usage(before, after)
+    if repair:
+        usage["repair"] = repair
     return usage
+
+
+def repair_snapshot(snapshot: dict) -> dict:
+    """A node's 4k-repair fields from a SNAPSHOT (deploy.repair_fields,
+    deploy.contributor_repair_fields): the contributor's from its /metrics
+    and /api/node, a mesh node's from its fast plane and /api/node memory.
+    {} when it serves none."""
+    if snapshot.get("service") == "needletail-contrib":
+        return deploy.contributor_repair_fields(snapshot.get("contrib_metrics") or "",
+                                                snapshot.get("contrib_part_store"))
+    plane = (snapshot.get("relay_session") or {}).get("fast_plane")
+    return deploy.repair_fields(plane, snapshot.get("node_memory"))
+
+
+def repair_usage(before: dict, after: dict) -> dict:
+    """The repair fields over the run (deploy.repair_usage): counts' differences,
+    levels at the end."""
+    return deploy.repair_usage(repair_snapshot(before), repair_snapshot(after))
 
 
 def run(args: argparse.Namespace) -> None:

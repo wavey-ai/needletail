@@ -268,6 +268,53 @@ class Dry(unittest.TestCase):
         self.assertTrue(text.rstrip().splitlines()[-1].endswith("--status complete"))
 
 
+class MediaBesidePush(unittest.TestCase):
+    """tools6 (4k-isolation's tooling faults): the media copy that runs
+    beside push named no error. Its text is said, journalled and recorded;
+    a second failure fails the step with both texts."""
+
+    def lab(self, failures: list):
+        lab = object.__new__(iso.Iso)
+        lab.runner = mock.Mock(dry=False)
+        lab.record = {"failures": []}
+        calls = []
+
+        def media():
+            calls.append("media")
+            if failures:
+                raise RuntimeError(failures.pop(0))
+
+        lab.media = media
+        lab.push = lambda: calls.append("push")
+        return lab, calls
+
+    def test_a_failed_copy_is_named_and_copied_again(self):
+        lab, calls = self.lab(["lon-src: rsync failed: connection reset"])
+        lab.media_beside_push()
+        self.assertEqual(sorted(calls), ["media", "media", "push"])
+        self.assertEqual(lab.record["media_errors"], ["lon-src: rsync failed: connection reset"])
+        self.assertEqual(lab.record["failures"],
+                         ["media beside push: lon-src: rsync failed: connection reset"])
+        said = " ".join(str(call) for call in lab.runner.say.call_args_list)
+        self.assertIn("connection reset", said)
+        lab.runner.journal.assert_called_once()
+
+    def test_two_failures_fail_the_step_with_both_texts(self):
+        lab, _calls = self.lab(["first: no space", "second: still no space"])
+        with self.assertRaises(RuntimeError) as caught:
+            lab.media_beside_push()
+        self.assertIn("first: no space", str(caught.exception))
+        self.assertIn("second: still no space", str(caught.exception))
+        self.assertEqual(len(lab.record["media_errors"]), 2)
+
+    def test_a_good_copy_records_nothing(self):
+        lab, calls = self.lab([])
+        lab.media_beside_push()
+        self.assertEqual(sorted(calls), ["media", "push"])
+        self.assertNotIn("media_errors", lab.record)
+        self.assertEqual(lab.record["failures"], [])
+
+
 # ------------------------------------------------------------------ report
 
 def node(core=50.0, softirq=5.0, drops=None, tee=None, rss=500, stop=None, thread="video", last=1):

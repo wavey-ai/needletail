@@ -56,6 +56,131 @@ def dry_run(*argv: str) -> dict:
     return json.loads(out.getvalue())
 
 
+class ReaderHosts(unittest.TestCase):
+    """Integration 6: the reader hosts follow the layout. A London-only lab
+    (leave_out=newyork) has no New York distributor: its reader host is
+    dropped from the default hosts, refused when named, and a --no-up pass
+    reads what the running lab left out (every pass after the first used
+    to fail on new-readers' entry point)."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        patcher = mock.patch.object(bench.lab, "WORK", self.dir / "lab")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_left_out_site_s_host_is_dropped_or_refused(self):
+        quiet = contextlib.redirect_stdout(io.StringIO())
+        self.assertEqual(bench.reader_hosts(parse()), ["lon-readers", "new-readers"])
+        with quiet as err:
+            hosts = bench.reader_hosts(parse("--set", "own_cpus=1",
+                                             "--set", "leave_out=newyork,lon-edge-3"))
+        self.assertEqual(hosts, ["lon-readers"])
+        self.assertIn("new-readers", err.getvalue())
+        with self.assertRaises(SystemExit):
+            bench.reader_hosts(parse("--hosts", "new-readers", "--set", "leave_out=newyork"))
+        # own_cpus's default leaves out only the slots: both sites keep theirs.
+        self.assertEqual(bench.reader_hosts(parse("--set", "own_cpus=1")),
+                         ["lon-readers", "new-readers"])
+        # --no-up: the running lab's record of what it left out; a pass
+        # that brings its own lab up ignores the last lab's record.
+        bench.lab.save("left-out.json", sorted(bench.lab.leave_out_names("newyork")))
+        self.assertEqual(
+            [item["entry"] for item in bench.reader_commands(parse("--set", "own_cpus=1"),
+                                                            self.dir, "0")],
+            ["lon-dist-a", "lon-dist-a", "new-dist-a", "new-dist-a"])
+        with quiet:
+            self.assertEqual(bench.reader_hosts(parse("--no-up")), ["lon-readers"])
+        self.assertEqual(
+            [item["host"] for item in bench.reader_commands(parse("--no-up"), self.dir, "0")],
+            ["lon-readers", "lon-readers"])
+
+
+class BusyReasks(unittest.TestCase):
+    """rm/cpuadmit 156fa2a: the crowd's re-asks after edge-busy, summed from
+    needletail-load's interval lines into the run's crowd report and lines,
+    per listener per 10 s, so the ramp shows the back-off."""
+
+    def test_the_crowd_report_shows_the_back_off(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        (directory / "summary.json").write_text(json.dumps(
+            {"duration_s": 20.0, "total": {"listeners_started": 100, "parts": 5}}))
+        rows = [{"t": 1.0, "total": {"active": 100, "busy_reasks": 30}},
+                {"t": 2.0, "total": {"active": 100, "busy_reasks": 50}},
+                {"t": 20.0, "total": {"active": 100, "busy_reasks": 20}},
+                {"t": 20.5, "phase": "final", "total": {"active": 0, "busy_reasks": 0}}]
+        (directory / "intervals.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in rows) + "\n")
+        item = {"site": "london", "per_edge": 50, "ramp": "100@0", "edges": {},
+                "out": str(directory)}
+        report = bench.load_report([item])
+        self.assertEqual(report[0]["busy_reasks"], 100)
+        # 100 re-asks / 100 listeners over 20 s: 0.5 a listener per 10 s;
+        # the worst second 50 of 100 listeners: 5 per 10 s.
+        self.assertEqual(report[0]["busy_reasks_per_listener_10s"], 0.5)
+        self.assertEqual(report[0]["busy_reasks_per_listener_10s_max"], 5.0)
+        self.assertIn("    busy re-asks 100 (per listener per 10 s 0.5, worst interval 5.0)",
+                      bench.load_lines(report))
+        # A tool before 156fa2a says nothing: no line.
+        (directory / "intervals.jsonl").write_text(json.dumps(
+            {"t": 1.0, "total": {"active": 1}}) + "\n")
+        report = bench.load_report([item])
+        self.assertNotIn("busy_reasks", report[0])
+        self.assertFalse([line for line in bench.load_lines(report) if "busy" in line])
+
+
+class ClientDrops(unittest.TestCase):
+    """Integration 6: every pass records each client's own UDP sockets'
+    drops (/proc/PID/net/udp, the sockets its fds hold), so a 4K viewer's
+    drops are told from its namespace's other clients'."""
+
+    def test_a_process_s_own_socket_drops(self):
+        import socket as sockets
+        sock = sockets.socket(sockets.AF_INET, sockets.SOCK_DGRAM)
+        self.addCleanup(sock.close)
+        sock.bind(("127.0.0.1", 0))
+        self.assertEqual(bench.socket_drops(os.getpid()), 0)
+        self.assertIsNone(bench.socket_drops(2 ** 22 + 7))
+
+    def test_client_kinds(self):
+        self.assertEqual(bench.client_kind({"kind": "udp", "report": "/x/4k-crowd/a.uc0.uc.json"}),
+                         "udp")
+        self.assertEqual(bench.client_kind({"kind": "udp", "report": "/x/s/a.4k.udp1.json"}),
+                         "4k-udp")
+        self.assertEqual(bench.client_kind({"kind": "hls"}), "4k-hls")
+        self.assertEqual(bench.client_kind({"lane": "h3"}), "reader")
+
+
+class ClientCpus(unittest.TestCase):
+    """Integration 6: --split-client-cpus puts the crowd's load tool on the
+    layout's tool CPUs and the readers, probes and 4K viewers on its probe
+    CPUs (edge_lab.rest_split), so a viewer does not wait behind the crowd."""
+
+    def setUp(self):
+        self.dir = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        for target, name, value in ((bench.lab, "WORK", self.dir / "lab"),
+                                    (bench.lab, "nsenter", lambda name: ["ns", str(name)]),
+                                    (bench.lab, "join_tools", lambda: None)):
+            patcher = mock.patch.object(target, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        bench.lab.save("cpus.json", {"_rest": [26, 27, 28, 29, 30], "lon-src": [31]})
+
+    def test_the_load_tool_and_the_viewers_on_their_own_cpus(self):
+        split = parse("--split-client-cpus")
+        self.assertEqual(bench.client_prefix(split, "lon-readers-2", "load"),
+                         ["ns", "lon-readers-2", "taskset", "-c", "28,29,30"])
+        self.assertEqual(bench.client_prefix(split, "lon-readers", "client"),
+                         ["ns", "lon-readers", "taskset", "-c", "26,27"])
+        # Without the option every client shares the layout's rest.
+        self.assertEqual(bench.client_prefix(parse(), "lon-readers", "client"),
+                         ["ns", "lon-readers", "taskset", "-c", bench.lab.cpu_list([26, 27, 28, 29, 30])])
+        self.assertNotIn(bench.lab.TOOL_CPUS_ENV, os.environ)
+
+
 class Arguments(unittest.TestCase):
     def test_flags_reach_every_role(self):
         args = parse("--mesh-args", "--relay-forward-nonblocking false", "--edge-args", "--x 1",
@@ -675,7 +800,8 @@ class EdgeLoad(unittest.TestCase):
 
     def test_a_crowd_for_each_site_over_its_edges(self):
         args = parse("--load-listeners", "64", "--load-sites", "london,newyork",
-                     "--load-args=--silence-nack false", "--payload", "opus")
+                     "--load-args=--silence-nack false", "--payload", "opus",
+                     "--load-direct", "--no-up")
         edges = {"london": ["lon-edge-1", "lon-edge-2"], "newyork": ["new-edge-1"]}
         with mock.patch.object(bench.lab, "edges", side_effect=lambda site: edges[site]):
             items = bench.load_commands(args, pathlib.Path("/x"))
@@ -691,7 +817,7 @@ class EdgeLoad(unittest.TestCase):
     def test_a_crowd_through_the_assignment_and_the_gauges(self):
         """Phase AM 10: --load-assign gives needletail-load every distributor
         and edge of the site as entry points; AM 8: the gauge lines."""
-        args = parse("--load-listeners", "8", "--load-assign")
+        args = parse("--load-listeners", "8", "--load-assign", "--no-up")
         with mock.patch.object(bench.lab, "edges", return_value=["lon-edge-1"]), \
                 mock.patch.object(bench.lab, "distributors", return_value=["lon-dist-a"]):
             command = bench.load_commands(args, pathlib.Path("/x"))[0]["command"]
@@ -702,6 +828,18 @@ class EdgeLoad(unittest.TestCase):
         self.assertEqual(command[command.index("--tls-ca") + 1], bench.lab.ca_file())
         # needletail-load refuses --edges with --entry.
         self.assertNotIn("--edges", command)
+        # Integration 6: the entry is the default (no --load-assign), and a
+        # run that brings its own lab up takes the planned layout's nodes,
+        # not the last lab's record (no slot, nothing left out).
+        default = bench.load_commands(parse("--load-listeners", "8",
+                                            "--set", "leave_out=lon-edge-3"),
+                                      pathlib.Path("/x"))[0]["command"]
+        self.assertNotIn("--edges", default)
+        entries = default[default.index("--entry") + 1].split(",")
+        names = {bench.lab.node(name)["public_ipv4"]: name
+                 for name in bench.lab.names(site="london")}
+        self.assertEqual(sorted(names[entry.split("//")[1].split(":")[0]] for entry in entries),
+                         ["lon-dist-a", "lon-dist-b", "lon-edge-1", "lon-edge-2", "lon-edge-4"])
         rows = [{"t": 1.0, "lon-edge-1": {"subscribers": 64, "load_permille": 700,
                                           "egress_observed_bps": 70e6,
                                           "advertised_free_bps": 15e6}},

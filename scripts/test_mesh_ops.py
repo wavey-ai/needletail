@@ -541,19 +541,52 @@ class Parity(unittest.TestCase):
         self.assertEqual(self.parity(), [])
 
     def test_a_parent_that_is_alive_but_4_ms_late_is_refused(self):
-        problems = self.parity(staying={"slack_mean_us_10s": 989_000, "slack_min_us_10s": 986_800})
-        self.assertEqual(len(problems), 2, problems)
-        self.assertTrue(all(item.startswith("P3 on time") for item in problems))
-        self.assertIn("989000", problems[0])
-        self.assertIn("993000", problems[0])
-        # Only its worst object late: refused all the same.
-        self.assertEqual(len(self.parity(staying={"slack_min_us_10s": 986_800})), 1)
+        figures: list = []
+        problems = self.parity(staying={"slack_mean_us_10s": 989_000, "slack_min_us_10s": 986_800},
+                               figures=figures)
+        # The mean 4 ms later: refused. Its 10 s minimum 4 ms later is within
+        # max(5 ms, 1% of 993 ms) = 9.93 ms (lead's decision, tools6).
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("P3 on time: the mean is late"))
+        for figure in ("989000", "993000", "4000 us later, 1000 allowed", "986800", "990800",
+                       "4000 us later, 9930 allowed"):
+            self.assertIn(figure, problems[0])
+        self.assertEqual(figures, [{"stream_id": 3001, "mean_us": [989_000, 993_000],
+                                    "min_us": [986_800, 990_800], "mean_later_us": 4000,
+                                    "mean_allowed_us": 1000, "min_later_us": 4000,
+                                    "min_allowed_us": 9930, "mean_ok": False, "min_ok": True}])
         # Within the 1 ms of the rule: passes.
         self.assertEqual(self.parity(staying={"slack_mean_us_10s": 992_100,
                                               "slack_min_us_10s": 989_900}), [])
         # --parity-ms widens it knowingly.
         self.assertEqual(self.parity(staying={"slack_mean_us_10s": 989_000,
                                               "slack_min_us_10s": 986_800}, parity_ms=4.5), [])
+
+    def test_p3_the_minimum_moves_within_its_tolerance(self):
+        """Local proof 3: equal means (998.3 ms), the 10 s minimum 1 to 4 ms
+        apart: passes; a minimum past max(5 ms, 1% of the mean) is refused,
+        and so is a mean more than 1 ms later however good the minimum."""
+        equal = {"slack_mean_us_10s": 998_300}
+        for apart in (1_000, 2_500, 4_000, 9_983):
+            self.assertEqual(self.parity(leaving={**equal, "slack_min_us_10s": 992_737},
+                                         staying={**equal, "slack_min_us_10s": 992_737 - apart}),
+                             [], apart)
+        problems = self.parity(leaving={**equal, "slack_min_us_10s": 992_737},
+                               staying={**equal, "slack_min_us_10s": 992_737 - 9_984})
+        self.assertEqual(len(problems), 1)
+        self.assertTrue(problems[0].startswith("P3 on time: the worst object is late"))
+        self.assertIn("9983 allowed", problems[0])
+        # The floor: with a small mean slack, 5 ms.
+        small = {"slack_mean_us_10s": 100_000}
+        self.assertEqual(self.parity(leaving={**small, "slack_min_us_10s": 90_000},
+                                     staying={**small, "slack_min_us_10s": 85_000}), [])
+        self.assertEqual(len(self.parity(leaving={**small, "slack_min_us_10s": 90_000},
+                                         staying={**small, "slack_min_us_10s": 84_999})), 1)
+        problems = self.parity(staying={"slack_mean_us_10s": 991_999,
+                                        "slack_min_us_10s": 999_000})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("the mean is late", problems[0])
+        self.assertIsNone(mesh_ops.p3_summary([]))
 
     def test_p2a_ordinary_repaired_skips_pass_and_more_are_refused(self):
         # 10,000 objects in 10 s: 0.1 % is 10. Local proof 2's lanes skipped
@@ -773,6 +806,15 @@ class ForwarderGate(Base):
         self.assertEqual(sorted(pair[0] for pair in gate.pairs),
                          ["new-edge-1", "new-edge-2", "new-edge-3"])
         self.assertEqual(gate.evidence["video_children"], 0)
+        # The gate's output names P3's two figures (pass or refuse), and its
+        # evidence keeps every pair's.
+        summary = [note for note in gate.notes if note.startswith("P3 over ")]
+        self.assertEqual(len(summary), 1, gate.notes)
+        self.assertIn("mean slack at most 0 us later (allowed 1000", summary[0])
+        self.assertIn("10 s minimum at most 0 us later (allowed 9930", summary[0])
+        self.assertEqual(len(gate.evidence["p3"]), 3)
+        self.assertEqual({item["child"] for item in gate.evidence["p3"]},
+                         {"new-edge-1", "new-edge-2", "new-edge-3"})
 
     def test_lg2_the_child_s_record_of_the_other_parent(self):
         self.sim.row[("new-edge-2", "new-dist-a")] = {"slack_mean_us_10s": 989_000}
@@ -1010,8 +1052,13 @@ class Capacity(Base):
         self.assertEqual(evidence["one_path"],
                          {"single_legs": 30, "unadvertised_legs": 25, "legs": 55})
         # Room 10 + 30: the 55 do not fit; the 60 on lon-edge-2 are not counted.
-        self.assertEqual(problems, ["capacity: the other edges have room for 40 legs, "
-                                    "lon-edge-1 holds 55"])
+        # The room by load agrees: 55 of 120 legs' share of 600 permille is
+        # 275, and 50 + 150 is all the room there is (tools6).
+        self.assertEqual(problems[0], "capacity: the other edges have room for 40 legs, "
+                                      "lon-edge-1 holds 55")
+        self.assertEqual(len(problems), 2)
+        self.assertIn("(275\u2030 of it to move)", problems[1])
+        self.assertIn("have 200\u2030 of room", problems[1])
         self.sim.nodes_["lon-edge-2"]["legs"] = 100
         problems, _ = mesh_ops.capacity_check(
             lab, "lon-edge-1", {name: self.status(name) for name in lab.edges("london")}, 5.0,
@@ -1645,6 +1692,101 @@ class Roll(Base):
         self.assertIn(why["settled_on"], ("its share", "rebalance still", "bound"))
         self.assertIn("left_unix", why)
         self.assertTrue(journal["finished"])
+
+    def drain(self, name, **kwargs) -> int:
+        return mesh_ops.drain(self.sim, name, options=self.options(), out=self.out, err=self.err,
+                              clock=self.clock, sleep=self.clock.sleep, **kwargs)
+
+    def test_a_drain_with_no_room_is_refused_with_the_numbers(self):
+        """Local proof 3 (a drain): the other edges at 843-879 permille; the
+        drain ended at its grace and overloaded them. Now refused (exit 2),
+        nothing touched, the room in the refusal."""
+        self.busy_london()
+        self.assertEqual(self.drain("lon-edge-1"), 2)
+        text = self.err.getvalue()
+        self.assertIn("drain of lon-edge-1 refused: capacity:", text)
+        self.assertIn("capacity: no room: lon-edge-1 carries 750\u2030 (150 UDP legs, 0 LL-HLS "
+                      "sessions); the other serving edges of london have 100\u2030 of room under "
+                      "the 800\u2030 target (lon-edge-2 750\u2030, lon-edge-3 750\u2030)", text)
+        self.assertIn("--surge starts a standby edge or slot first", text)
+        self.assertFalse([call for call in self.sim.calls
+                          if call[0] in ("post", "start", "stage")], self.sim.calls)
+        self.assertFalse(self.sim.nodes_["lon-edge-1"]["drained"])
+
+    def test_a_drain_with_room_drains_and_stays_drained(self):
+        self.assertEqual(self.drain("lon-edge-1"), 0, self.err.getvalue())
+        self.assertTrue(self.sim.nodes_["lon-edge-1"]["drained"])
+        self.assertNotIn("start", [call[0] for call in self.sim.calls])
+        self.assertIn("lon-edge-1 is drained and stays drained", self.err.getvalue())
+        journal = self.journals()[-1]
+        self.assertTrue(journal["finished"])
+        self.assertEqual(journal["exit"], 0)
+
+    def test_a_drain_with_surge_starts_the_standby_edge_first(self):
+        self.busy_london()
+        self.assertEqual(self.drain("lon-edge-1", surge=True), 0, self.err.getvalue())
+        starts = [index for index, call in enumerate(self.sim.calls) if call[:2] ==
+                  ("start", "lon-edge-4")]
+        drains = [index for index, call in enumerate(self.sim.calls)
+                  if call == ("post", "lon-edge-1", "drain-node")]
+        self.assertTrue(starts and drains and starts[0] < drains[0], self.sim.calls)
+        self.assertTrue(self.sim.nodes_["lon-edge-1"]["drained"])
+        # The surge edge stays serving: the drained edge does not come back.
+        self.assertTrue(self.sim.nodes_["lon-edge-4"]["serving"])
+        self.assertIn("the surge edge lon-edge-4 serves", self.err.getvalue())
+
+    def test_a_drain_of_what_is_not_a_serving_edge_is_refused(self):
+        self.assertEqual(self.drain("lon-dist-a"), 2)
+        self.assertEqual(self.drain("lon-edge-4"), 2)
+
+    def test_load_room_counts_reported_load_and_an_idle_edge_needs_none(self):
+        self.busy_london()
+        lab = self.lab()
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+        problems, evidence = mesh_ops.load_room(lab, "lon-edge-1", statuses)
+        self.assertEqual(evidence["room_permille"], 100)
+        self.assertEqual(len(problems), 1)
+        self.sim.nodes_["lon-edge-1"]["legs"] = 0
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+        self.assertEqual(mesh_ops.load_room(lab, "lon-edge-1", statuses)[0], [])
+        # Without place240's heavy figures the byte room is not counted.
+        self.assertIsNone(mesh_ops.byte_room(statuses["lon-edge-1"], {}))
+
+    def test_byte_room_counts_place240_s_heavy_egress_and_refuses_without_it(self):
+        """Integration 6: tools6's byte_room hook reads the heavy room each
+        edge serves in /api/node (place240): X's heavy bytes must fit in the
+        others' heavy egress left; an edge in distress gives none."""
+        self.busy_london(legs=20)  # room by load_permille for any of them
+        lab = self.lab()
+        statuses = {name: self.status(name) for name in lab.edges("london")}
+
+        def heavy(committed_bps, distress=None):
+            return {"cpus": 2, "budget_permille": 1500, "committed_permille": 600,
+                    "measured_permille": 500, "egress_max_bps": 600_000_000,
+                    "committed_bps": committed_bps, "heavy_streams": 1,
+                    "distress": distress}
+
+        statuses["lon-edge-1"].raw["heavy"] = heavy(494_000_000)
+        others = [name for name in statuses if name != "lon-edge-1"]
+        for name in others:
+            statuses[name].raw["heavy"] = heavy(247_000_000)
+        room = mesh_ops.byte_room(statuses["lon-edge-1"],
+                                  {name: statuses[name] for name in others})
+        self.assertEqual(room["need_bps"], 494_000_000)
+        self.assertEqual(room["room_bps"], 353_000_000 * len(others))
+        self.assertTrue(room["fits"])
+        self.assertEqual(mesh_ops.load_room(lab, "lon-edge-1", statuses)[0], [])
+        # Every other edge full or in distress: no room for 494 Mbit/s.
+        for name in others:
+            statuses[name].raw["heavy"] = heavy(494_000_000, distress="send-deferred")
+        problems, evidence = mesh_ops.load_room(lab, "lon-edge-1", statuses)
+        self.assertEqual(evidence["bytes"]["room_bps"], 0)
+        self.assertTrue(problems and problems[0].startswith("capacity: no room"), problems)
+        self.assertIn("heavy egress left", problems[0])
+        # One edge that does not serve the figures: not counted in bytes.
+        del statuses[others[0]].raw["heavy"]
+        self.assertIsNone(mesh_ops.byte_room(statuses["lon-edge-1"],
+                                             {name: statuses[name] for name in others}))
 
     def test_three_edges_at_ordinary_load_roll_without_a_surge(self):
         self.assertEqual(self.roll("edges", sites=["london"]), 0, self.err.getvalue())

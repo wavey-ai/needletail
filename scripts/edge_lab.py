@@ -40,7 +40,11 @@ the cgroups are scopes of the user's systemd manager.
                                         service)
   edge_lab.py stop <node>               stop a node's service (SIGTERM; a slot: out of
                                         service again)
-  edge_lab.py drain <node>              POST /api/control/drain-node for that node
+  edge_lab.py drain <node> [--surge]    drain an edge when the site's other serving edges
+                                        have room for its load (mesh_ops.drain), else
+                                        refused with the numbers (exit 2); --surge starts
+                                        a standby edge or slot first; --no-room-check:
+                                        POST /api/control/drain-node and nothing else
   edge_lab.py resume <node>             POST /api/control/resume-node for that node
   edge_lab.py crash <node> [--restart-s 1]
                                         SIGKILL a node's service, start it again
@@ -258,8 +262,16 @@ LADDER = [
 RTMP_PORT = 19350
 # ntcmp of the referee's harness (needletail-compare), which sends a clip of
 # its prepare-media to a contributor (`ntcmp flv`).
+# The referee's ntcmp (the 4K feed's FLV sender and the LL-HLS readers):
+# NEEDLETAIL_NTCMP_BIN, else NEEDLETAIL_COMPARE_ROOT's, else the
+# workspace's needletail-compare (integration 6: from a worktree under rm/
+# the workspace default named rm/needletail-compare, which does not exist,
+# and the 4K source never started).
 NTCMP = pathlib.Path(os.environ.get(
-    "NEEDLETAIL_NTCMP_BIN", str(WORKSPACE / "needletail-compare" / "target" / "ntcmp")))
+    "NEEDLETAIL_NTCMP_BIN",
+    str(pathlib.Path(os.environ.get("NEEDLETAIL_COMPARE_ROOT",
+                                    str(WORKSPACE / "needletail-compare")))
+        / "target" / "ntcmp")))
 
 
 def referee_clip(path: pathlib.Path) -> dict | None:
@@ -2679,6 +2691,15 @@ def source_prefix(video: bool = False) -> list[str]:
     return prefix
 
 
+def source_alive(pid) -> bool:
+    """Whether source process `pid` runs (and is not a zombie)."""
+    try:
+        state = pathlib.Path(f"/proc/{int(pid)}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, ValueError, TypeError, IndexError):
+        return False
+    return state != "Z"
+
+
 def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
                   clip: pathlib.Path | None = None) -> None:
     """Start the sources in lon-src, an encoder on the contributors' VLAN as
@@ -2688,6 +2709,11 @@ def start_sources(seconds: int, video: bool = True, audio: str | None = "probe",
     `audio` is `probe` (lossless FLAC), `daw` (FLAC and HQ SoundKit Opus) or
     None."""
     sources = load("sources.json")
+    # A source whose process has ended (the last pass's feed ran its
+    # seconds out) is started again (integration 6: a --no-up pass found
+    # the ended feed still listed and never started the 4K source).
+    for name in [name for name, pid in sources.items() if not source_alive(pid)]:
+        del sources[name]
     targets = contributor_targets()
     feed = [str(VIDEO_FEED), "--seconds", str(seconds),
             *[target.rsplit(":", 1)[0] for target in targets], "--"]
@@ -3654,6 +3680,27 @@ def engine_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = Non
                             resume=args.resume, options=options, **engine)
 
 
+def drain_verb(arguments: list[str], ops: EdgeLabOps | None = None, **engine) -> int:
+    """`drain NODE [--surge]` through the engine (mesh_ops.drain): refused
+    (exit 2) with the numbers when the site's other serving edges have no
+    room, or with --surge after its standby edge or slot is started and
+    ready. stdout carries the change's two marks only."""
+    parser = argparse.ArgumentParser(prog="edge_lab.py drain")
+    parser.add_argument("node")
+    parser.add_argument("--surge", action="store_true")
+    parser.add_argument("--gate-timeout-s", type=float, default=30.0)
+    parser.add_argument("--ready-timeout-s", type=float, default=60.0)
+    parser.add_argument("--marks", default=None)
+    parser.add_argument("--node-marks", default=None)
+    parser.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S)
+    args = parser.parse_args(arguments)
+    options = mesh_ops.Options(gate_timeout_s=args.gate_timeout_s,
+                               ready_timeout_s=args.ready_timeout_s, marks_file=args.marks,
+                               node_marks_file=args.node_marks, poll_s=args.poll_s)
+    return mesh_ops.drain(ops or EdgeLabOps(), args.node, surge=args.surge, options=options,
+                          **engine)
+
+
 def change_verb(command: str, arguments: list[str], ops: EdgeLabOps | None = None,
                 **change) -> int:
     """`kill`, `return` and `freeze` on this lab (workstream A, A 2.10):
@@ -3750,6 +3797,11 @@ def main() -> None:
             if name in slot_nodes():
                 set_slot_in_service(name, False)
             print(f"{name} stopped")
+        elif command == "drain" and "--no-room-check" not in arguments:
+            # tools6: the room on the site's other serving edges first
+            # (mesh_ops.drain); --surge starts its standby edge or slot
+            # first; --no-room-check is the bare control command.
+            sys.exit(drain_verb(arguments))
         elif command in ("drain", "resume"):
             name = arguments[0]
             # Not `status`: that name is the status command's function, and

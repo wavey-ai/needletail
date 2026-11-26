@@ -12,7 +12,9 @@ python3 -m unittest scripts/test_warm_boot.py"""
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import sys
@@ -176,6 +178,25 @@ class Push(scale.FakeLab):
         self.addCleanup(patcher.stop)
         return seen
 
+    def test_push_waits_for_every_node_s_ssh_and_pushes_nothing_without_it(self):
+        # cmpd8: the first push after `up` was refused by a host a minute old.
+        state = self.state()
+        late = sorted(state["nodes"])[0]
+        asked = []
+
+        def wait_ssh(nodes, **_kwargs):
+            asked.append(sorted(node["name"] for node in nodes))
+            return [node["name"] for node in nodes if node["name"] != late]
+
+        before = {name: self.scripts_of(name) for name in state["nodes"]}
+        with mock.patch.object(deploy.common, "wait_ssh", wait_ssh):
+            with self.assertRaises(SystemExit) as refused:
+                self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
+        self.assertIn(late, str(refused.exception))
+        self.assertIn("nothing was pushed", str(refused.exception))
+        self.assertEqual(asked, [sorted(state["nodes"])])
+        self.assertEqual({name: self.scripts_of(name) for name in state["nodes"]}, before)
+
     def test_every_host_push_manages_is_warmed(self):
         seen = self.timeouts()
         self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True))
@@ -218,7 +239,8 @@ class Push(scale.FakeLab):
         for name, node in state["nodes"].items():
             text = self.scripts_of(name)
             if node["role"] == "livekit":
-                self.assertEqual(text, "", name)   # never touched
+                # Never changed: push only asks whether its sshd answers.
+                self.assertEqual(text, "true", name)
             elif node["role"] == "load":
                 self.assertNotIn(f"systemctl start {CHECK}", text, name)
                 self.assertIn(f"systemctl disable --quiet {CHECK}", text, name)
@@ -374,9 +396,12 @@ class Push(scale.FakeLab):
         self.assertEqual(warm["lon-edge-1"]["slow_reasons"], ["page-stall"])
         self.assertEqual(warm["lon-load-1"]["verdict"], "ok")
         self.assertEqual(warm["lon-edge-6"]["verdict"], "ok")      # a standby edge
-        self.assertEqual(warm["lon-edge-2"], {"verdict": "missing", "complete": False})
-        self.assertNotIn("contrib-lon", {name for name, item in warm.items()
-                                         if item["verdict"] == "ok"})
+        # Not seeded: the check unit ran at this push and wrote its record,
+        # the contributor's too (cmpd8: it had none).
+        self.assertEqual((warm["lon-edge-2"]["verdict"], warm["lon-edge-2"]["complete"]),
+                         ("ok", True))
+        self.assertEqual((warm["contrib-lon"]["verdict"], warm["contrib-lon"]["complete"]),
+                         ("ok", True))
 
     def test_collect_takes_every_node_s_warm_record(self):
         for name in ("lon-edge-1", "lon-load-1", "lon-lk"):
@@ -396,6 +421,305 @@ class Push(scale.FakeLab):
         self.assertEqual(decide({"role": "edge"}, False, "report")[0], "report")
         for role in ("distributor", "backbone", "contributor", "load", "livekit"):
             self.assertEqual(decide({"role": role}, False)[0], "report", role)
+
+
+class ContributorUnit(unittest.TestCase):
+    """cmpd8 (24 Nov): the contributor ended a whole push without a warm
+    record. Its unit, its check unit and its build's nodecheck, as push
+    renders them (no fake: the real binaries_for)."""
+
+    def test_the_contributor_s_unit_wants_the_check_and_starts_after_it(self):
+        settings = dict(deploy.DEFAULT_SETTINGS)
+        unit = deploy.unit_text("needletail-contrib", "info", settings)
+        self.assertIn(f"Wants={CHECK}\nAfter={CHECK}\n", unit)
+        node = {"name": "contrib-lon", "role": "contributor", "type": "g6-dedicated-4"}
+        files = deploy.node_files(["/opt/needletail/builds/k-1/av-contrib"], unit, settings, node)
+        self.assertIn("needletail-nodecheck boot --out /run/needletail/node-warm.json --warm",
+                      files["check"])
+        self.assertIn("--warm-max-seconds 600 ", files["check"])   # 8 GB: 2 x 300 s
+        names = [path.name for path in deploy.binaries_for("contributor")]
+        self.assertEqual(names[0], "av-contrib")
+        self.assertIn("needletail-nodecheck", names)
+
+
+class ContributorWarm(scale.FakeLab):
+    """push, start and replace on FakeHosts, whose check unit writes a warm
+    record only with needletail-nodecheck in /usr/local/bin (FakeHosts.
+    run_check): every managed host ends with a complete record, the
+    contributor included; a host without one makes the command exit
+    EXIT_UNWARMED naming it, after everything else, unless
+    --allow-unwarmed."""
+
+    def push(self, **kwargs):
+        return self.quietly(deploy.command_push, self.namespace(skip_bootstrap=True, **kwargs))
+
+    def wanted(self) -> set:
+        state = self.state()
+        return deploy.status_warm_wanted(state)
+
+    def test_a_push_ends_with_a_complete_record_on_every_role(self):
+        self.push()
+        state = self.state()
+        warm = state["deployed"]["warm"]
+        wanted = self.wanted()
+        roles = {state["nodes"][name]["role"] for name in wanted}
+        self.assertTrue({"edge", "distributor", "contributor", "load", "livekit"} <= roles, roles)
+        for name in wanted:
+            with self.subTest(name):
+                self.assertTrue(warm[name]["complete"], warm[name])
+                self.assertTrue(self.hosts.warm_record_complete(name))
+        # The contributor's build carries nodecheck, linked on the node.
+        self.assertIn("/usr/local/bin/needletail-nodecheck", self.hosts.fs("contrib-lon"))
+        self.assertIn("warm pass: ", self.stderr)
+        self.assertNotIn("UNWARMED", self.stderr)
+
+    def cache_old_contributor_build(self) -> pathlib.Path:
+        """The contributor's build as an older deploy tool cached it: its
+        av-contrib, the probe and the source, no needletail-nodecheck (cmpd8:
+        703fe825245f cached before 68eaaaf gave the contributor one)."""
+        build = deploy.build_of(self.roots / "contrib" / "av-contrib")
+        target = deploy.builds_dir() / build["key"]
+        target.mkdir(parents=True)
+        for path in (self.roots / "contrib" / "av-contrib", self.roots / "tools" / "aep1-48k-probe",
+                     self.roots / "tools" / "daw-test-source"):
+            (target / path.name).write_bytes(path.read_bytes())
+            (target / path.name).chmod(0o755)
+        return target
+
+    def test_cmpd8_a_contributor_build_cached_without_nodecheck_is_completed(self):
+        target = self.cache_old_contributor_build()
+        self.push()
+        self.assertTrue((target / "needletail-nodecheck").is_file())
+        self.assertTrue(self.state()["deployed"]["warm"]["contrib-lon"]["complete"])
+        self.assertIn("/usr/local/bin/needletail-nodecheck", self.hosts.fs("contrib-lon"))
+
+    def test_a_build_without_nodecheck_and_none_to_add_is_refused_at_its_stage(self):
+        """No nodecheck in the roots either: the stage of a node with the
+        check unit is refused, rather than leave the node unwarmed."""
+        target = self.cache_old_contributor_build()
+        with mock.patch.object(deploy, "binaries_for", lambda role, node=None: []):
+            with self.assertRaises(deploy.mesh_ops.Refused) as caught:
+                deploy.ensure_nodecheck(target.name)
+        self.assertIn(f"build {target.name} has no needletail-nodecheck", str(caught.exception))
+        deploy.ensure_nodecheck(target.name)           # the roots have one: added
+        self.assertTrue((target / "needletail-nodecheck").is_file())
+
+    def test_a_running_contributor_without_a_record_is_warmed_by_the_next_push(self):
+        """cmpd8's lab after the fix: the contributor runs, its check ran
+        with no nodecheck and left no record. The next push's activation
+        runs it again (stopping the service first, ACTIVATE_SCRIPT)."""
+        self.hosts.no_warm_record.add("contrib-lon")
+        with self.assertRaises(SystemExit):
+            self.push()
+        self.assertTrue(self.hosts.running["contrib-lon"])
+        self.hosts.no_warm_record.clear()
+        self.push(nodes="contrib-lon")
+        self.assertTrue(self.state()["deployed"]["warm"]["contrib-lon"]["complete"])
+
+    def test_a_push_that_leaves_one_host_unwarmed_exits_naming_it(self):
+        self.hosts.no_warm_record.add("contrib-lon")
+        self.hosts.warm_incomplete.add("lon-edge-2")
+        with self.assertRaises(SystemExit) as caught:
+            self.push()
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+        self.assertIn("push: UNWARMED: contrib-lon (warm missing), lon-edge-2 (warm "
+                      "warm-timeout", self.stderr)
+        self.assertNotIn("lon-edge-1 (", self.stderr.split("UNWARMED")[-1])
+        # Everything else was done: every node is recorded, its warm pass too.
+        state = self.state()
+        self.assertIn("contrib-lon", state["deployed"]["nodes"])
+        self.assertEqual(state["deployed"]["warm"]["contrib-lon"]["verdict"], "missing")
+        self.assertTrue(state["deployed"]["warm"]["lon-load-1"]["complete"])
+        # status marks them plainly.
+        records = {name: deploy.judge_warm(deploy.parse_warm_record(
+            self.hosts.fs(name).get(WARM_FILE, b"").decode()), deploy.DEFAULT_SETTINGS, None)
+            for name in state["nodes"]}
+        with mock.patch.object(deploy.common, "ARTIFACT_DIR", pathlib.Path("/nonexistent")):
+            lines = deploy.warm_status(state, records, self.wanted())
+        self.assertTrue(lines[0].startswith("warm pass: UNWARMED contrib-lon, lon-edge-2: "),
+                        lines)
+
+    def test_allow_unwarmed_goes_on_and_names_the_hosts(self):
+        self.hosts.no_warm_record.add("contrib-lon")
+        self.push(allow_unwarmed=True)
+        self.assertIn("UNWARMED hosts, allowed by --allow-unwarmed", self.stderr)
+        self.assertIn("contrib-lon (warm missing)", self.stderr)
+        self.assertFalse(deploy.build_parser().parse_args(["push"]).allow_unwarmed)
+        for verb in (["push", "--allow-unwarmed"], ["start", "--nodes", "x", "--allow-unwarmed"],
+                     ["replace", "--nodes", "x", "--budget-usd", "1", "--allow-unwarmed"]):
+            self.assertTrue(deploy.build_parser().parse_args(verb).allow_unwarmed, verb)
+
+    def test_without_node_warm_nothing_is_asked(self):
+        self.hosts.no_warm_record.update(self.state()["nodes"])
+        self.push(set=["node_warm=false"])
+        self.assertNotIn("UNWARMED", self.stderr)
+
+    def test_start_of_a_standby_edge_without_a_record_exits_naming_it(self):
+        standby = sorted(self.saved_standby())[0]
+        self.hosts.no_warm_record.add(standby)
+        self.push(allow_unwarmed=True)
+        start = lambda **kwargs: self.quietly(deploy.command_start,
+                                               self.namespace(nodes=standby, **kwargs))
+        with self.assertRaises(SystemExit) as caught:
+            start()
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+        self.assertIn(f"start: UNWARMED: {standby} (warm missing)", self.stderr)
+        self.assertTrue(self.hosts.running[standby])           # started all the same
+        self.assertNotIn(standby, self.saved_standby())
+        # Its record written later (the check run again): a start is clean.
+        self.hosts.no_warm_record.clear()
+        self.quietly(deploy.command_stop, self.namespace(nodes=standby))
+        self.hosts.fs(standby).pop(WARM_FILE, None)
+        start()
+        self.assertNotIn("UNWARMED", self.stderr)
+        self.assertTrue(self.state()["deployed"]["warm"][standby]["complete"])
+
+    def test_replace_ends_strict_on_the_hosts_it_pushed(self):
+        self.push()
+
+        def replace(ops, name, **kwargs):
+            ops.warm_wanted.add(name)
+            ops.warm_records[name] = None
+            return deploy.mesh_ops.EXIT_DONE
+
+        args = self.namespace(nodes="contrib-lon", mode="rebuild", no_slot=False, keep_slot=False,
+                              budget_usd=1.0, spent_before_usd=None)
+        with mock.patch.object(deploy, "REPLACE_LAB_CALLS", ()), \
+                mock.patch.object(deploy.mesh_ops, "replace", replace):
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(deploy.command_replace, args)
+            self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+            self.assertIn("replace: UNWARMED: contrib-lon (warm missing)", self.stderr)
+            args.allow_unwarmed = True
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(deploy.command_replace, args)
+            self.assertEqual(caught.exception.code, 0)
+
+
+class EngineWarm(scale.FakeLab):
+    """roll and restart end as push does: the records of the nodes their
+    activations ran on are read, and a change that was done exits
+    EXIT_UNWARMED naming a node without a complete one, unless
+    --allow-unwarmed. The engine runs on a fake clock (the real
+    mesh_ops.roll and restart_nodes, given it)."""
+
+    def engine(self):
+        clock = scale.types.SimpleNamespace(now=max(time.time(), getattr(self, "last_now", 0.0)))
+        clock_now = lambda: clock.now  # noqa: E731
+
+        def sleep(seconds):
+            clock.now += max(seconds, 0.001)
+            self.last_now = clock.now
+
+        self.hosts.clock = clock_now
+        return {"out": io.StringIO(), "err": io.StringIO(), "clock": clock_now, "sleep": sleep}
+
+    def command(self, handler, verb, **kwargs):
+        real = getattr(deploy.mesh_ops, verb)
+
+        def on_fake_clock(*args, **given):
+            return real(*args, **given, **self.engine())
+
+        with mock.patch.object(deploy.mesh_ops, verb, on_fake_clock):
+            with self.assertRaises(SystemExit) as caught:
+                self.quietly(handler, self.namespace(**kwargs))
+        return caught.exception.code
+
+    def cold(self, name: str) -> None:
+        """The host's check writes no record from now on, and this boot's
+        is gone."""
+        self.hosts.no_warm_record.add(name)
+        self.hosts.fs(name).pop(WARM_FILE, None)
+
+    def test_a_roll_names_a_node_it_left_unwarmed(self):
+        ContributorWarm.push(self)
+        self.set_root("av-mesh", scale.NEW)
+        self.cold("lon-edge-1")
+        code = self.command(deploy.command_roll, "roll", tier="edges", nodes="lon-edge-1")
+        self.assertEqual(code, deploy.EXIT_UNWARMED, self.stderr)
+        self.assertIn("roll: UNWARMED: lon-edge-1 (warm missing)", self.stderr)
+        # Everything else was done: it runs the new build, recorded.
+        self.assertEqual(self.state()["deployed"]["nodes"]["lon-edge-1"]["build"],
+                         scale.key(scale.NEW))
+        self.assertEqual(self.state()["deployed"]["warm"]["lon-edge-1"]["verdict"], "missing")
+        # Its check was run again by the activation (the record was gone).
+        self.assertGreaterEqual(self.hosts.warm_runs.get("lon-edge-1", 0), 2)
+
+    def test_a_restart_names_a_node_it_left_unwarmed_and_allow_goes_on(self):
+        ContributorWarm.push(self)
+        self.cold("lon-edge-2")
+        code = self.command(deploy.command_restart, "restart_nodes", nodes="lon-edge-2")
+        self.assertEqual(code, deploy.EXIT_UNWARMED, self.stderr)
+        self.assertIn("restart: UNWARMED: lon-edge-2 (warm missing)", self.stderr)
+        code = self.command(deploy.command_restart, "restart_nodes", nodes="lon-edge-2",
+                            allow_unwarmed=True)
+        self.assertEqual(code, 0, self.stderr)
+        self.assertIn("restart: UNWARMED hosts, allowed by --allow-unwarmed", self.stderr)
+        # Warm again: a clean restart, and the record says so.
+        self.hosts.no_warm_record.clear()
+        code = self.command(deploy.command_restart, "restart_nodes", nodes="lon-edge-2")
+        self.assertEqual(code, 0, self.stderr)
+        self.assertNotIn("UNWARMED", self.stderr)
+        self.assertTrue(self.state()["deployed"]["warm"]["lon-edge-2"]["complete"])
+
+    def test_a_restart_of_a_role_names_a_node_it_left_unwarmed(self):
+        ContributorWarm.push(self)
+        self.cold("contrib-lon")
+        with self.assertRaises(SystemExit) as caught:
+            self.quietly(deploy.command_restart, self.namespace(roles="contributor"))
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED, self.stderr)
+        self.assertIn("restart: UNWARMED: contrib-lon (warm missing)", self.stderr)
+        self.hosts.no_warm_record.clear()
+        self.quietly(deploy.command_restart, self.namespace(roles="contributor"))
+        self.assertNotIn("UNWARMED", self.stderr)
+
+    def test_a_failed_change_keeps_its_status_and_names_the_hosts(self):
+        ops = mock.Mock()
+        with mock.patch.object(deploy, "unwarmed_hosts", lambda ops: {"lon-edge-1": "missing"}):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                code = deploy.engine_warm_exit(ops, "roll", deploy.mesh_ops.EXIT_STOPPED,
+                                               self.namespace())
+        self.assertEqual(code, deploy.mesh_ops.EXIT_STOPPED)
+        self.assertIn("roll: UNWARMED: lon-edge-1 (missing)", err.getvalue())
+
+    def test_roll_and_restart_take_the_flag(self):
+        parser = deploy.build_parser()
+        for verb in (["roll", "edges"], ["restart", "--nodes", "x"]):
+            self.assertFalse(parser.parse_args(verb).allow_unwarmed, verb)
+            self.assertTrue(parser.parse_args(verb + ["--allow-unwarmed"]).allow_unwarmed, verb)
+
+
+class DualContributorWarm(scale.FakeLab):
+    """The proving lab's two contributors (contrib-lon and its standby
+    contrib-lon-b): both warmed, judged and named."""
+
+    push = ContributorWarm.push
+
+    def setUp(self):
+        super().setUp()
+        topology = json.loads((scale.FILES / "topology-proving.json").read_text())
+        full = scale.topology_state(topology)
+        self.state_file.write_text(json.dumps(full))
+        self.hosts.by_address = {node["public_ipv4"]: node for node in full["nodes"].values()}
+        self.hosts.by_address_name = dict(full["nodes"])
+        (self.dir / "settings.json").unlink()
+        with contextlib.redirect_stderr(io.StringIO()):
+            deploy.load_settings([f"standby_edges={json.dumps(topology['standby_edges'])}"],
+                                 lab_run_id="test")
+
+    def test_both_contributors_are_warmed_and_judged(self):
+        self.push()
+        warm = self.state()["deployed"]["warm"]
+        for name in ("contrib-lon", "contrib-lon-b"):
+            self.assertTrue(warm[name]["complete"], name)
+        self.hosts.no_warm_record.add("contrib-lon-b")
+        for name in ("contrib-lon", "contrib-lon-b"):
+            self.hosts.fs(name).pop(WARM_FILE)
+        with self.assertRaises(SystemExit) as caught:
+            self.push()
+        self.assertEqual(caught.exception.code, deploy.EXIT_UNWARMED)
+        self.assertIn("UNWARMED: contrib-lon-b (warm missing)", self.stderr)
+        self.assertTrue(self.state()["deployed"]["warm"]["contrib-lon"]["complete"])
 
 
 class TouchProof(unittest.TestCase):
@@ -473,9 +797,9 @@ class ThereferesLab(unittest.TestCase):
         self.assertEqual(flagged["tok-nano"], [])           # 4.85 s: under the 5 s write
         self.assertEqual(flagged["lon-edge-2"], [])         # 0.4 s, backed already
         self.assertEqual(flagged["new-edge-2"], [])
-        # The stall-share clause at half (the lead, 24 Nov): none of the
-        # table's hosts. At a quarter it flagged ten fast first-touch hosts
-        # (the fastest spent most of their pass in long writes).
+        # The stall-share clause is off (tools6): none of the table's hosts.
+        # At a quarter it flagged ten fast first-touch hosts (the fastest
+        # spent most of their pass in long writes).
         self.assertEqual(flagged["lon-dist-a"], [])
         self.assertEqual(flagged["contrib-lon"], [])
         self.assertEqual(flagged["tok-view"], [])
@@ -588,8 +912,10 @@ class SlowHostRule(unittest.TestCase):
 
     def test_the_defaults(self):
         self.assertEqual(self.SETTINGS["node_warm_slow_write_ms"], 5000)
-        # The lead, 24 Nov: half (at a quarter it flagged ten fast first-touch hosts).
-        self.assertEqual(self.SETTINGS["node_warm_slow_stall_share_permille"], 500)
+        # tools6: the stall-share clause is off (cmpd8's table: no value
+        # separates the hosts that stopped later); at a quarter it flagged
+        # ten fast first-touch hosts, at half 22 of cmpd8's 30.
+        self.assertIsNone(self.SETTINGS["node_warm_slow_stall_share_permille"])
         self.assertEqual(self.SETTINGS["node_warm_slow_seconds_per_4gb"], 180)
 
     def test_the_hunt_s_touched_edge_is_not_slow(self):
@@ -618,18 +944,54 @@ class SlowHostRule(unittest.TestCase):
                          [])
 
     def test_half_of_the_pass_in_stalls(self):
+        # Off by default: the share is recorded, never a reason.
+        out = self.judged(stalled_us=139_000_000, threads=2)
+        self.assertEqual(out["slow_reasons"], [])
+        self.assertEqual(out["stall_share_permille"], 993)
+        half = {**self.SETTINGS, "node_warm_slow_stall_share_permille": 500}
         # 70 s on two threads: 140 thread-s; half is 70 s.
         many = [{"ms": 300.0}] * 230                       # 69 s
-        self.assertEqual(self.judged(stalls=many)["slow_reasons"], [])
-        self.assertEqual(self.judged(stalls=many + [{"ms": 3000.0}])["slow_reasons"],
+        self.assertEqual(self.judged(half, stalls=many)["slow_reasons"], [])
+        self.assertEqual(self.judged(half, stalls=many + [{"ms": 3000.0}])["slow_reasons"],
                          ["stall-share"])
         # Dropped stalls count at 100 ms each (a lower bound).
-        self.assertEqual(self.judged(stalls=many, stalls_dropped=11)["slow_reasons"],
+        self.assertEqual(self.judged(half, stalls=many, stalls_dropped=11)["slow_reasons"],
                          ["stall-share"])
         # nodecheck's own total and thread count win when it gives them.
-        self.assertEqual(self.judged(stalled_us=36_000_000, threads=1)["slow_reasons"],
+        self.assertEqual(self.judged(half, stalled_us=36_000_000, threads=1)["slow_reasons"],
                          ["stall-share"])
-        self.assertEqual(self.judged(stalls=many, stalled_us=1_000_000)["slow_reasons"], [])
+        self.assertEqual(self.judged(half, stalls=many, stalled_us=1_000_000)["slow_reasons"],
+                         [])
+
+    # cmpd8 (25 Nov): each host's warm pass at push (lab state's
+    # deployed.warm: stall_share_permille, seconds) and its worst heartbeat
+    # stop in any step afterwards (needletail-compare evidence
+    # 20261125-4k-wave11-host-stops.json, every session; 0: none of 20 ms).
+    CMPD8 = {
+        "lon-dist-a": (0, 25), "syd-dist-b": (0, 0), "syd-edge-2": (0, 0), "new-view": (0, 492),
+        "syd-nano": (0, 1122), "syd-view": (0, 3291), "new-lk": (58, 0), "new-edge-2": (189, 27),
+        "new-nano": (354, 1020), "new-dist-b": (540, 47), "new-dist-a": (549, 20),
+        "lon-lk": (638, 0), "tok-edge-2": (649, 0), "syd-dist-a": (656, 20),
+        "tok-dist-b": (661, 0), "new-edge-1": (661, 70), "tok-view": (680, 2870),
+        "lon-edge-1": (717, 63), "lon-src": (748, 0), "tok-edge-1": (759, 0),
+        "lon-edge-2": (811, 546), "tok-lk": (845, 0), "tok-dist-a": (849, 42),
+        "syd-lk": (869, 0), "lon-nano": (880, 1640), "lon-view": (884, 2955),
+        "tok-nano": (884, 1811), "syd-edge-1": (891, 231), "lon-dist-b": (918, 506),
+        "lk-redis": (924, 0)}
+
+    def test_no_share_separates_cmpd8_s_hosts_that_stopped(self):
+        """Why the clause is off: for every threshold of the share, hosts
+        that later stopped for 100 ms or more fall on both sides, or hosts
+        that never did are flagged; the best threshold still misjudges 7 of
+        30."""
+        bad = {name for name, (_share, stop) in self.CMPD8.items() if stop >= 100}
+        best = len(self.CMPD8)
+        for threshold in range(0, 1001):
+            flagged = {name for name, (share, _stop) in self.CMPD8.items() if share > threshold}
+            best = min(best, len(flagged ^ bad))
+        self.assertEqual(best, 7)
+        self.assertEqual(sorted(name for name in bad if self.CMPD8[name][0] == 0),
+                         ["new-view", "syd-nano", "syd-view"])
 
     def test_a_timeout_and_the_settings(self):
         self.assertIn("warm-timeout", self.judged(finished=False, seconds=300.0)["slow_reasons"])
@@ -664,6 +1026,18 @@ class SlowHostRule(unittest.TestCase):
 
 
 class Status(unittest.TestCase):
+    def test_a_bare_warm_word_is_not_part_of_the_service_line(self):
+        # cmpd8: a host with no warm record ended its probe with "WARM " and the
+        # output came back stripped, so the line read "... cpu_mb_s=1474 WARM"
+        # and status died parsing the speed.
+        line, (word, found) = deploy.split_status_probe(
+            "svc active restarts=0 cpu_mb_s=1474\nTHP always [madvise] never\nWARM")
+        self.assertEqual(line, "svc active restarts=0 cpu_mb_s=1474")
+        self.assertIsNone(found)
+        self.assertIn("thp=madvise", word)
+        line, _ = deploy.split_status_probe("svc cpu_mb_s=1474\nTHP\nWARM")
+        self.assertEqual(line, "svc cpu_mb_s=1474")
+
     def test_the_probe_line_and_the_summary(self):
         text = ("needletail-mesh active restarts=0 mem_mb=40\n"
                 "THP always [madvise] never\n"
@@ -877,3 +1251,39 @@ class Autoscaler(autoscale_tests.Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeployDrain(unittest.TestCase):
+    """tools6: deploy `drain --nodes X [--surge]` runs mesh_ops.drain (room
+    first) and exits with its status; with --surge, a surge edge left
+    unwarmed exits 6 as roll does."""
+
+    def run_drain(self, argv, code, unwarmed=False):
+        seen = []
+        ops = mock.Mock()
+
+        def engine_drain(ops_, name, surge=False, options=None):
+            seen.append((name, surge, options.gate_timeout_s))
+            return code
+
+        args = deploy.build_parser().parse_args(["drain", *argv])
+        with mock.patch.object(deploy, "linode_ops", lambda args: ops), \
+                mock.patch.object(deploy.mesh_ops, "drain", engine_drain), \
+                mock.patch.object(deploy, "warm_gate",
+                                  lambda ops_, verb, allow: "UNWARMED lon-edge-4" if unwarmed
+                                  else None), \
+                mock.patch.object(deploy.mesh_ops, "renice", lambda nice: None), \
+                contextlib.redirect_stderr(io.StringIO()), \
+                self.assertRaises(SystemExit) as caught:
+            args.handler(args)
+        return caught.exception.code, seen
+
+    def test_the_exit_is_the_engine_s(self):
+        self.assertEqual(self.run_drain(["--nodes", "lon-edge-1"], 2),
+                         (2, [("lon-edge-1", False, 30.0)]))
+        self.assertEqual(self.run_drain(["--nodes", "lon-edge-1", "--surge"], 0)[0], 0)
+        self.assertEqual(self.run_drain(["--nodes", "lon-edge-1", "--surge"], 0,
+                                        unwarmed=True)[0], deploy.EXIT_UNWARMED)
+        with self.assertRaises(SystemExit):
+            deploy.command_drain(deploy.build_parser().parse_args(
+                ["drain", "--nodes", "a,b"]))

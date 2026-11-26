@@ -106,6 +106,7 @@ import zlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import archived_run  # noqa: E402
 import contributor_changes  # noqa: E402
+import egress_plan  # noqa: E402
 import mesh_ops  # noqa: E402
 import run_archive  # noqa: E402
 import small_mesh_common as common  # noqa: E402
@@ -289,6 +290,53 @@ DEFAULT_SETTINGS = {
     #   reader of a held rendition does not start cleanly yet (wave 7 item 5
     #   in the low-latency results).
     "relay_audio_copies": None,
+    # 4k-repair (av-mesh rm/4k-repair, av-contrib rm/4k-repair): repair of
+    # any part of several symbols sized to each link's measured loss, asks
+    # for only what a part lacks, decodes off the tees. None renders nothing
+    # (the binaries' defaults, which are the settings below); each is
+    # rendered only where the binary lists the flag (binary_takes).
+    # - relay_part_repair: av-mesh --relay-part-repair (asks, answers);
+    #   also renders --relay-primary-promoted on every compiled fast-plane
+    #   child whose primary lane is "source" (the merged topology's regional
+    #   relays, the legacy one's first forwarders under a backbone), whose
+    #   primary must admit the repair intent of answers, link repair and
+    #   regenerated sources. False leaves it off.
+    # - relay_link_repair: av-mesh --relay-link-repair (ledgers to children,
+    #   repair sized to each child's loss).
+    # - relay_trim_forwarded_repair, relay_regenerate_sources,
+    #   relay_trim_to_margin: av-mesh's flags of those names.
+    # - relay_decode_workers: av-mesh --relay-decode-workers (default: CPUs
+    #   less the class threads, 1 on g6-dedicated-2).
+    # - relay_part_repair_rtt_ms: av-mesh --relay-part-repair-rtt-ms.
+    # - relay_repair_sizing ("measured" | "policy"),
+    #   relay_repair_floor_permille, relay_repair_cap_percent,
+    #   relay_repair_measured_min_symbols: av-contrib's flags of those names.
+    # - relay_part_store_mb: the byte bound of a node's kept-parts store (the
+    #   decoded parts it answers asks from): av-mesh --relay-part-store-mb on
+    #   a fast-plane node, av-contrib's flag of the same name on the
+    #   contributor.
+    # - part_repair_group (integration 6): "off" (the default: the headline
+    #   build, "cheap tee + tee per lane", the tested combination of
+    #   integrate-5b) renders --relay-part-repair false --relay-link-repair
+    #   false --relay-trim-forwarded-repair false; "on" renders all three
+    #   true (the A/B cell with repair); None leaves the three to their own
+    #   settings (None: the binaries' defaults, which are on). Each of the
+    #   three set on its own wins over the group. The group's flags are
+    #   rendered whatever the binary (no binary_takes): the flags probe
+    #   refuses a binary that lacks them.
+    "part_repair_group": "off",
+    "relay_part_repair": None,
+    "relay_link_repair": None,
+    "relay_trim_forwarded_repair": None,
+    "relay_regenerate_sources": None,
+    "relay_trim_to_margin": None,
+    "relay_decode_workers": None,
+    "relay_part_repair_rtt_ms": None,
+    "relay_repair_sizing": None,
+    "relay_repair_floor_permille": None,
+    "relay_repair_cap_percent": None,
+    "relay_repair_measured_min_symbols": None,
+    "relay_part_store_mb": None,
     "cache_mesh_fast_plane_push": None,
     "relay_demand_renditions": None,
     # Wave 8 stage 3. cache_mesh_fast_plane_video_push: av-mesh
@@ -521,6 +569,58 @@ DEFAULT_SETTINGS = {
     # past it the site would need a level of regional relays, which the
     # deploy does not build yet, so plan refuses.
     "max_edges_per_forwarder": 16,
+    # The heavy egress plan (tools6; scripts/egress_plan.py): each node's
+    # planned egress at the heaviest stream, rate x (children fed in full +
+    # plan_repair_share x children fed repair only + plan_edge_viewers on an
+    # edge), against its plan's max_heavy_egress_mbit ({plan: Mbit/s} over
+    # 600 g6-dedicated-2, 1200 -4, 2400 -8). None: the topology file's key
+    # of the same name, else 247 Mbit/s, 0.2 and 2. `plan` prints it and
+    # refuses a node over its limit (--allow-egress-over); push and restart
+    # print it; status shows each node's measured egress beside it.
+    "plan_stream_mbit": None,
+    "plan_repair_share": None,
+    "plan_edge_viewers": None,
+    "max_heavy_egress_mbit": None,
+    # The send path (av-mesh send240, integration 6), rendered on every mesh
+    # service so that the lab's record shows them:
+    # - send_defer_ms, send_defer_mb: --send-defer-ms (200, the binary's
+    #   default; 0 turns the keep-and-resend off) and --send-defer-mb
+    #   ("auto": 0.8% of the node, 31 MB on a g6-dedicated-2).
+    # - send_pacing: --send-pacing k (0, off: the headline). Above 0 each
+    #   heavy socket is paced at k times its egress (send240 B; the A/B cell
+    #   is 4), which needs fq: with host_qdisc "prio" the video band is fq
+    #   already; with host_qdisc "none" a root fq goes on every NIC (the
+    #   public one included) while it is on, and comes off when it is off.
+    # - send_pacing_floor_mbit: --send-pacing-floor-mbit (None: 100).
+    # - edge_pull_budget_mbit: --edge-pull-budget-mbit (48, the binary's
+    #   default: what an edge may pull over the cache mesh).
+    # - heavy_egress_max_mbps: an edge's --heavy-egress-max-mbps (place240's
+    #   cap of its heavy sessions' bytes). "plan" (the default) takes the
+    #   egress plan's limit of the edge's Linode plan (max_heavy_egress_mbit:
+    #   600 on a g6-dedicated-2, the binary's default), so placement and the
+    #   egress plan agree; a number sets it; None renders nothing.
+    "send_defer_ms": 200,
+    "send_defer_mb": "auto",
+    "send_pacing": 0,
+    "send_pacing_floor_mbit": None,
+    "edge_pull_budget_mbit": 48,
+    "heavy_egress_max_mbps": "plan",
+    # CPU admission (av-mesh rm/cpuadmit, integration 6), rendered on every
+    # mesh service so that the record shows it: --cpu-admit (on), the term
+    # full at --cpu-admit-cpus-full-percent 80 of the node's CPUs (softirq
+    # included) or --cpu-admit-thread-full-percent 70 of one send thread, a
+    # datagram charged at least --cpu-admit-datagram-ns 3000 until measured,
+    # a cold edge's pending legs capped at --cpu-admit-pending-max-permille
+    # 100, two-leg listeners shed after --cpu-admit-shed-after-ms 2000 over
+    # full. heavy_distress_core_permille: place240's busiest-CPU distress,
+    # off (0) since cpuadmit's term covers it. None renders nothing.
+    "cpu_admit": True,
+    "cpu_admit_cpus_full_percent": 80,
+    "cpu_admit_thread_full_percent": 70,
+    "cpu_admit_datagram_ns": 3000,
+    "cpu_admit_pending_max_permille": 100,
+    "cpu_admit_shed_after_ms": 2000,
+    "heavy_distress_core_permille": 0,
     # Edges fed by the fast plane (low-latency B5/B6/B9; wave 5 W0): each
     # distributor of a site is a forwarder of the site's edges as well. A
     # cache-mesh lease that it serves to an edge makes the edge a lease
@@ -760,15 +860,21 @@ DEFAULT_SETTINGS = {
     # deploy judges each warm record itself (judge_warm) and a host is slow
     # when the pass took more than node_warm_slow_seconds_per_4gb for every
     # 4 GB of its memory, or one page write stalled
-    # node_warm_slow_write_ms or more, or more than
-    # node_warm_slow_stall_share_permille of the pass's thread time went in
-    # writes of 100 ms or more. An edge (standby and slot edges included)
-    # that is slow is replaced once; any other host is reported.
+    # node_warm_slow_write_ms or more. An edge (standby and slot edges
+    # included) that is slow is replaced once; any other host is reported.
+    # The stall-share clause (more than node_warm_slow_stall_share_permille
+    # of the pass's thread time in writes of 100 ms or more) is off (None):
+    # tools6, on cmpd8's warm table (30 hosts, the whole of MemAvailable
+    # written), no value of the share separates the hosts that stopped
+    # later (heartbeat stops of 0.1 to 3.3 s; three of them at share 0) from
+    # those that did not (share up to 924); at 500 it flagged 22 of 30.
+    # Every record keeps the figure (stall_share_permille); a value from 1
+    # to 1000 puts the clause back for a run.
     "node_warm": True,
     "node_warm_max_seconds_per_4gb": 300,
     "node_warm_slow_seconds_per_4gb": 180,
     "node_warm_slow_write_ms": 5000,
-    "node_warm_slow_stall_share_permille": 500,
+    "node_warm_slow_stall_share_permille": None,
     "node_check_seconds": 0,
     "node_check_max_stop_ms": 20,
     "node_check_max_steal_permille": 10,
@@ -1008,6 +1114,7 @@ def check_settings(settings: dict) -> None:
     class isolation settings (class_plan)."""
     part_plan(settings)
     standby_edges(settings)
+    repair_switches(settings)
     if settings.get("client_udp_max_subscribers") is not None:
         whole(settings["client_udp_max_subscribers"], "client_udp_max_subscribers")
     mode = topology_mode(settings)
@@ -1121,12 +1228,14 @@ def judge_warm(record: dict | None, settings: dict, node: dict | None) -> dict |
                     for every 4 GB of its memory (MemTotal as the record
                     gives it, else its plan's);
       page-stall    one page write took node_warm_slow_write_ms or more;
-      stall-share   more than node_warm_slow_stall_share_permille of the
+      stall-share   only when node_warm_slow_stall_share_permille is set
+                    (off by default, tools6): more than that share of the
                     pass's thread time (seconds x threads) went in writes of
                     100 ms or more: the record's stalled_us when nodecheck
                     gives it, else its listed stalls plus every dropped one
                     at 100 ms (a lower bound); threads from the record, else
-                    the plan's vCPUs;
+                    the plan's vCPUs. The share is recorded either way
+                    (stall_share_permille);
       warm-timeout  the pass did not finish within its limit.
     A record without a warm pass is returned as it is; None stays None."""
     if not record or not isinstance(record.get("warm"), dict) or not record["warm"].get("ran", True):
@@ -1154,9 +1263,8 @@ def judge_warm(record: dict | None, settings: dict, node: dict | None) -> dict |
         stall_ms = float(warm.get("stall_ms") or NODE_WARM_STALL_MS)
         stalled_us = (sum(float(item.get("ms") or 0.0) for item in warm.get("stalls") or [])
                       + int(warm.get("stalls_dropped") or 0) * stall_ms) * 1000.0
-    share = int(settings.get("node_warm_slow_stall_share_permille")
-                or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
-    if seconds > 0 and float(stalled_us) > share / 1000.0 * seconds * 1e6 * threads:
+    share = settings.get("node_warm_slow_stall_share_permille")
+    if share and seconds > 0 and float(stalled_us) > int(share) / 1000.0 * seconds * 1e6 * threads:
         reasons.append("stall-share")
     if warm.get("finished") is False:
         reasons.append("warm-timeout")
@@ -1211,6 +1319,9 @@ def check_unit_wanted(settings: dict) -> bool:
 # priomap (TC_PRIO_INTERACTIVE). Priority 0, every other socket, is band 1.
 AUDIO_SOCKET_PRIORITY = 6
 HOST_QDISCS = ("prio", "none")
+# The qdisc class_plan gives a host with host_qdisc "none" and send_pacing
+# on: a root fq on every NIC (send240 B: SO_MAX_PACING_RATE needs fq).
+PACING_QDISC = "fq"
 CLASS_CPUS = re.compile(r"^(auto|[0-9]+,[0-9]+|)$")
 
 
@@ -1299,7 +1410,16 @@ def class_plan(settings: dict) -> dict:
     if qdisc not in HOST_QDISCS:
         raise ValueError(f"host_qdisc {qdisc!r} is not one of {', '.join(HOST_QDISCS)}")
     plan["host_qdisc"] = "none" if baseline else qdisc
+    plan["send_pacing"] = send_pacing_of(settings)
+    if plan["host_qdisc"] == "none" and plan["send_pacing"] > 0:
+        plan["host_qdisc"] = PACING_QDISC
     return plan
+
+
+def send_pacing_of(settings: dict) -> int:
+    """send_pacing as a whole number (0: off)."""
+    value = settings.get("send_pacing")
+    return 0 if value in (None, False) else whole(value, "send_pacing")
 
 
 def node_vcpus(node: dict) -> int | None:
@@ -2506,6 +2626,7 @@ def contributor_args(service: dict, settings: dict, node: dict | None = None) ->
                                                             "--region", node["region"]]))
     args += yield_to(extra, contributor_class_args(node or {}, class_plan(settings)))
     args += yield_to(extra, wave7_args(args, settings))
+    args += yield_to(extra, part_repair_args(args, settings))
     return args + extra
 
 
@@ -2588,6 +2709,86 @@ def binary_takes(kind: str, pairs: list[str]) -> list[str]:
     return out
 
 
+@functools.lru_cache(maxsize=None)
+def binary_is_clap(path: str, mtime_ns: int) -> bool:
+    """Whether `path --help` is a clap build's (a `Usage:` line): every
+    av-mesh and av-contrib is; the tools' tests stand in binaries that list
+    a few flags, which the flags probe does not judge."""
+    del mtime_ns  # part of the cache key only
+    try:
+        result = subprocess.run([path, "--help"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return "Usage:" in result.stdout
+
+
+@functools.lru_cache(maxsize=None)
+def binary_build_id(path: str, mtime_ns: int) -> str:
+    """What `path --version` prints (its head and build time), or why not."""
+    del mtime_ns  # part of the cache key only
+    try:
+        result = subprocess.run([path, "--version"], capture_output=True, text=True,
+                                timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"--version did not run: {error}"
+    text = (result.stdout or result.stderr).strip()
+    return text.splitlines()[0] if text else f"--version exited {result.returncode}"
+
+
+SERVICE_KINDS = {"needletail-mesh": "av-mesh", "needletail-contrib": "av-contrib"}
+
+
+def check_rendered_flags(rendered: dict[str, dict], strict: bool = False) -> None:
+    """The flags probe (integration 6): every long flag rendered for a
+    service must be one that the binary the render is for lists in its
+    --help, or the render refuses, naming each flag, its nodes and the
+    binary's build id, so that a tools/binary mismatch never reaches a lab
+    (cmpd8's round: the tools rendered --relay-primary-promoted to binaries
+    that lacked it). A render that names no binary (unit tests, a tool that
+    renders without one) is not probed, nor a stand-in whose --help is not
+    clap's (binary_is_clap). A binary that is missing or does not run here
+    is not probed by a render (binary_takes renders none of the new flags
+    for it); `strict` (plan, push, restart: the binaries they deploy)
+    refuses it."""
+    missing: dict[tuple[str, str], list[str]] = {}
+    unreadable = set()
+    for name, item in rendered.items():
+        kind = SERVICE_KINDS.get(item["service"])
+        path = RENDER_BINARIES.get(kind) if kind else None
+        if path is None:
+            continue
+        path = pathlib.Path(path)
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except OSError:
+            if strict:
+                unreadable.add((kind, str(path)))
+            continue
+        flags = binary_flags(str(path), mtime_ns)
+        if flags is None:
+            if strict:
+                unreadable.add((kind, str(path)))
+            continue
+        if not binary_is_clap(str(path), mtime_ns):
+            continue
+        for flag_name in sorted(flag_names(item["args"])):
+            if flag_name not in flags:
+                missing.setdefault((kind, flag_name), []).append(name)
+    if not missing and not unreadable:
+        return
+    lines = []
+    for kind, path in sorted(unreadable):
+        lines.append(f"{kind} at {path} does not run here (--help): its flags cannot be checked")
+    for (kind, flag_name), nodes in sorted(missing.items()):
+        path = pathlib.Path(RENDER_BINARIES[kind])
+        build = binary_build_id(str(path), path.stat().st_mtime_ns)
+        lines.append(f"{kind} at {path} ({build}) does not know {flag_name}, rendered for "
+                     f"{', '.join(sorted(nodes, key=mesh_ops.natural))}")
+    raise ValueError("flags probe: refused, the binaries do not match the tools' render:\n  "
+                     + "\n  ".join(lines))
+
+
 def report_unrendered(settings: dict, rendered: dict[str, dict]) -> None:
     """One stderr line naming each setting not at its default whose flag
     binary_takes left out of every node, with why: the binary runs on its
@@ -2639,6 +2840,106 @@ def two_path_args(node_args: list[str], settings: dict) -> list[str]:
         if given("client_udp_gso"):
             pairs += ["--client-udp-gso", flag(bool(settings["client_udp_gso"]))]
     return binary_takes("av-mesh", pairs)
+
+
+def part_repair_args(node_args: list[str], settings: dict) -> list[str]:
+    """The `--flag value` pairs of 4k-repair for a service rendered with
+    `node_args`: the contributor's repair sizing, and a fast-plane node's
+    (--relay-controlled-local) part repair, link repair, trim, regenerated
+    sources, decode workers, and the kept-parts store's bound, which both
+    take. Only the settings that are given, and only the flags the binary of
+    this render lists."""
+    def given(key: str) -> bool:
+        return settings.get(key) is not None
+
+    pairs = []
+    if is_contributor_args(node_args):
+        if given("relay_repair_sizing"):
+            sizing = str(settings["relay_repair_sizing"])
+            if sizing not in ("measured", "policy"):
+                raise ValueError(f"relay_repair_sizing {sizing!r} is not measured or policy")
+            pairs += ["--relay-repair-sizing", sizing]
+        for key in ("relay_repair_floor_permille", "relay_repair_cap_percent",
+                    "relay_repair_measured_min_symbols", "relay_part_store_mb"):
+            if given(key):
+                pairs += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
+        return binary_takes("av-contrib", pairs)
+    if "--relay-controlled-local" not in node_args:
+        return []
+    # The group's three (integration 6): rendered whatever the binary, so
+    # the flags probe refuses a binary without them.
+    switches = repair_switches(settings)
+    explicit = []
+    for key, value in switches.items():
+        if value is not None:
+            explicit += ["--" + key.replace("_", "-"), flag(value)]
+    for key in ("relay_regenerate_sources", "relay_trim_to_margin"):
+        if given(key):
+            pairs += ["--" + key.replace("_", "-"), flag(bool(settings[key]))]
+    for key in ("relay_decode_workers", "relay_part_repair_rtt_ms", "relay_part_store_mb"):
+        if given(key):
+            pairs += ["--" + key.replace("_", "-"), str(whole(settings[key], key))]
+    return explicit + binary_takes("av-mesh", pairs)
+
+
+REPAIR_GROUP_KEYS = ("relay_part_repair", "relay_link_repair", "relay_trim_forwarded_repair")
+
+
+def repair_switches(settings: dict) -> dict:
+    """{key: True | False | None} of the three part repair switches: each
+    set on its own, else part_repair_group's ("off": False, "on": True,
+    None: None, the binaries' default)."""
+    group = settings.get("part_repair_group", DEFAULT_SETTINGS["part_repair_group"])
+    if group not in (None, "off", "on"):
+        raise ValueError(f"part_repair_group {group!r} is not off, on or None")
+    base = None if group is None else group == "on"
+    return {key: base if settings.get(key) is None else bool(settings[key])
+            for key in REPAIR_GROUP_KEYS}
+
+
+def send_path_args(node: dict, settings: dict) -> list[str]:
+    """The send path's flags of every av-mesh service (send240 and
+    place240, integration 6), each given explicitly so that the lab's
+    record shows it: the keep-and-resend, the pacing, the pull budget, and
+    an edge's heavy egress cap from the egress plan's limit of its plan.
+    Rendered whatever the binary: the flags probe refuses one without
+    them."""
+    out = []
+    if settings.get("send_defer_ms") is not None:
+        out += ["--send-defer-ms", str(whole(settings["send_defer_ms"], "send_defer_ms"))]
+    if settings.get("send_defer_mb") is not None:
+        value = settings["send_defer_mb"]
+        out += ["--send-defer-mb",
+                "auto" if value == "auto" else str(whole(value, "send_defer_mb"))]
+    if settings.get("send_pacing") is not None:
+        out += ["--send-pacing", str(send_pacing_of(settings))]
+    if settings.get("send_pacing_floor_mbit") is not None:
+        out += ["--send-pacing-floor-mbit",
+                str(whole(settings["send_pacing_floor_mbit"], "send_pacing_floor_mbit"))]
+    if settings.get("edge_pull_budget_mbit") is not None:
+        out += ["--edge-pull-budget-mbit",
+                str(whole(settings["edge_pull_budget_mbit"], "edge_pull_budget_mbit"))]
+    if settings.get("cpu_admit") is not None:
+        out += ["--cpu-admit", flag(bool(settings["cpu_admit"]))]
+    for key in ("cpu_admit_cpus_full_percent", "cpu_admit_thread_full_percent",
+                "cpu_admit_datagram_ns", "cpu_admit_pending_max_permille",
+                "cpu_admit_shed_after_ms", "heavy_distress_core_permille"):
+        value = settings.get(key)
+        if value is not None:
+            # 0 is a value here (heavy_distress_core_permille: off).
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{key}={value!r} is not a whole number")
+            out += ["--" + key.replace("_", "-"), str(value)]
+    cap = settings.get("heavy_egress_max_mbps")
+    if node.get("role") == "edge" and cap is not None:
+        if cap == "plan":
+            limits = egress_plan.parse_limits(settings.get("max_heavy_egress_mbit"))
+            limit = limits.get(str(node.get("type") or ""))
+            if limit is not None:
+                out += ["--heavy-egress-max-mbps", str(int(limit))]
+        else:
+            out += ["--heavy-egress-max-mbps", str(whole(cap, "heavy_egress_max_mbps"))]
+    return out
 
 
 def wave7_args(node_args: list[str], settings: dict) -> list[str]:
@@ -3517,6 +3818,23 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
                     and "--relay-primary-promoted" not in flag_names(
                         args + list(settings[f"extra_{role}_args"]))):
                 args.append("--relay-primary-promoted")
+            # 4k-repair: a fast-plane child fed sources only by its primary
+            # (lane "source": a regional relay of the merged topology, a
+            # first forwarder under a backbone of the legacy one, a first
+            # forwarder of the contributor without repair on both lanes)
+            # takes the answers to its asks, its link repair and the
+            # regenerated sources from that primary too, which carry repair
+            # intent: a primary session refuses them unless promoted (review
+            # M5: every answer dropped as not_admitted, the child asking
+            # again). Lease children are promoted already (fast_edge_args).
+            # Integration 6: part_repair_group leaves relay_part_repair
+            # None, so the headline (group off) keeps integrate-5b's render
+            # and the A/B cells differ in the repair switches alone.
+            if (settings.get("relay_part_repair") is not False
+                    and service["primary_parent"].get("lane") == "source"
+                    and "--relay-primary-promoted" not in flag_names(
+                        args + list(settings[f"extra_{role}_args"]))):
+                args.append("--relay-primary-promoted")
             args += direct_mesh.get(node["name"], [])
         if slot_forwarder:
             # dist-c: a cache-mesh parent of its site's edges, fed as a
@@ -3570,11 +3888,14 @@ def render(state: dict, lab_settings: dict, plan: dict) -> dict[str, dict]:
         args += yield_to(extra, two_path_args(args, settings))
         args += yield_to(extra, wave7_args(args, settings))
         args += yield_to(extra, mesh_memory_args(node, settings))
+        args += yield_to(extra, part_repair_args(args, settings))
+        args += yield_to(extra, send_path_args(node, settings))
         args += yield_to(extra, stall_args("av-mesh", node, settings)) + extra
         rendered[node["name"]] = {
             "service": "needletail-mesh", "args": args,
             "rust_log": settings["rust_log_mesh"]}
     report_unrendered(lab_settings, rendered)
+    check_rendered_flags(rendered)
     check_class_agreement(rendered)
     check_cache_mesh_peers(state, rendered, lab_settings)
     check_class_ports(rendered, class_plan(lab_settings))
@@ -3817,8 +4138,9 @@ def check_unit_text(settings: dict, node: dict | None = None) -> str | None:
     if settings.get("node_warm"):
         slow = int(settings.get("node_warm_slow_seconds_per_4gb")
                    or DEFAULT_SETTINGS["node_warm_slow_seconds_per_4gb"])
-        share = int(settings.get("node_warm_slow_stall_share_permille")
-                    or DEFAULT_SETTINGS["node_warm_slow_stall_share_permille"])
+        # The clause off (None): 1000, which no pass can pass (more than all
+        # of its thread time), so that nodecheck's own slow_host agrees.
+        share = int(settings.get("node_warm_slow_stall_share_permille") or 1000)
         warm = (f" --warm \\\n  --warm-leave-mb {NODE_WARM_LEAVE_MB} --warm-max-seconds "
                 f"{warm_max_seconds(settings, node)} --slow-write-ms {slow_write_ms(settings)} "
                 f"--slow-seconds-per-4gb {slow} --slow-stall-share-permille {share}")
@@ -3927,9 +4249,21 @@ done
 for path in /sys/class/net/*; do
   [ -e "$path/device" ] || continue
   dev=${path##*/}
-  if tc qdisc show dev "$dev" | head -1 | grep -q '^qdisc prio 1: root'; then
+  if tc qdisc show dev "$dev" | head -1 | grep -Eq '^qdisc (prio 1|fq 30): root'; then
     tc qdisc del dev "$dev" root
   fi
+  echo "== $dev"
+  tc -s qdisc show dev "$dev"
+done
+""",
+    # send_pacing on without the prio root (send240 B): a root fq, handle
+    # 30:, with the band's per-flow limit; "none" takes it off again.
+    "fq": r"""
+modprobe sch_fq 2>/dev/null || true
+for path in /sys/class/net/*; do
+  [ -e "$path/device" ] || continue
+  dev=${path##*/}
+  tc qdisc replace dev "$dev" root handle 30: fq limit 65536 flow_limit 4096
   echo "== $dev"
   tc -s qdisc show dev "$dev"
 done
@@ -3950,11 +4284,14 @@ def check_host_qdisc(output: str, qdisc: str) -> list[str]:
     for device, shown in sorted(sections.items()):
         lines = [line for line in shown.splitlines() if line.startswith("qdisc ")]
         has_prio = bool(lines) and lines[0].startswith("qdisc prio 1: root")
+        has_fq = bool(lines) and lines[0].startswith("qdisc fq 30: root")
         if qdisc == "prio":
             ok = (has_prio and any(line.startswith("qdisc pfifo 10: parent 1:1") for line in lines)
                   and any(line.startswith("qdisc fq 20: parent 1:2") for line in lines))
+        elif qdisc == PACING_QDISC:
+            ok = has_fq
         else:
-            ok = not has_prio
+            ok = not has_prio and not has_fq
         if not ok:
             wrong.append(device)
     return wrong
@@ -4118,10 +4455,19 @@ done
 # installed, exited 203, stayed "active" and never ran again, so the node
 # never became ready). Blocks until the pass is done or its unit's
 # TimeoutStartSec; the activation's wait has that on top.
+# A node whose service runs without a complete record (cmpd8: the
+# contributor, whose check had run with no nodecheck on the node and stayed
+# "active", so its restarts never ran it again) is stopped first and then
+# warmed, as a node whose check unit is new is: never with its service
+# running (the pass takes nearly all free memory), never on a rollback.
 if [ -f "$UNITS/needletail-node-check.service" ] \
-    && ! grep -qs '"complete": *true' "$RUN/node-warm.json" \
-    && ! systemctl is-active --quiet "$service.service"; then
-  systemctl restart needletail-node-check.service || true
+    && ! grep -qs '"complete": *true' "$RUN/node-warm.json"; then
+  if ! systemctl is-active --quiet "$service.service"; then
+    systemctl restart needletail-node-check.service || true
+  elif [ "$rollback" = 0 ] && [ -x "$BIN/needletail-nodecheck" ]; then
+    systemctl stop "$service.service" || true
+    systemctl restart needletail-node-check.service || true
+  fi
 fi
 systemctl enable --quiet "$service.service" 2>/dev/null
 systemctl restart "$service.service" || finish false "systemctl restart failed"
@@ -4241,9 +4587,54 @@ def cache_build(role: str) -> dict:
             raise mesh_ops.Refused(
                 f"{files[0]} names build {build['key']}, and {target} holds another "
                 f"{files[0].name} of that build: a build id names one binary (rebuild it)")
+        # A build cached by an older deploy tool lacks the companions added
+        # since (cmpd8: the contributor's build 703fe825245f, cached before
+        # binaries_for gave the contributor needletail-nodecheck, was used
+        # again whole, so the contributor never had a nodecheck and its warm
+        # pass never ran). Its service binary stays; a missing companion is
+        # added, never one replaced.
+        complete_build(build["key"], files[1:])
         return build
     finally:
         shutil.rmtree(copy, ignore_errors=True)
+
+
+def complete_build(key: str, companions) -> list[str]:
+    """Add to builds/<key>/ each of `companions` (paths of the roots) that
+    it lacks, each by a rename; the names added. A file the build already
+    has is never written again."""
+    target = builds_dir() / key
+    added = []
+    for path in companions:
+        path = pathlib.Path(path)
+        if (target / path.name).exists() or not path.is_file():
+            continue
+        handle, name = tempfile.mkstemp(prefix=f".add-{path.name}-", dir=target)
+        os.close(handle)
+        temporary = pathlib.Path(name)
+        shutil.copy2(path, temporary)
+        temporary.replace(target / path.name)
+        added.append(path.name)
+    return added
+
+
+def ensure_nodecheck(key: str) -> None:
+    """Build `key` holds needletail-nodecheck, which its node's check unit
+    runs (the activation links it into /usr/local/bin): taken from the
+    roots when the cached build lacks it (a build cached by an older tool,
+    or fetched from a node that had none). Refused when there is none to
+    take: the node's warm pass would write no record."""
+    if (builds_dir() / key / "needletail-nodecheck").is_file():
+        return
+    source = next((path for path in binaries_for("load") if path.name == "needletail-nodecheck"),
+                  None)
+    if source is not None:
+        complete_build(key, [source])
+    if not (builds_dir() / key / "needletail-nodecheck").is_file():
+        raise mesh_ops.Refused(
+            f"build {key} has no needletail-nodecheck and {source or 'the av-mesh root'} has "
+            "none to add: the node's warm pass at boot would not run (build av-mesh's "
+            "needletail-nodecheck, or push with --set node_warm=false)")
 
 
 def cached(key: str, binary: str) -> bool:
@@ -4323,7 +4714,8 @@ HOST_QDISC_CHECK = {
     || { echo "the host qdisc prio has no pfifo 10: on $dev"; exit 1; }
   printf '%s\n' "$shown" | grep -q '^qdisc fq 20: parent 1:2' \
     || { echo "the host qdisc prio has no fq 20: on $dev"; exit 1; }""",
-    "none": r"""case "$root" in "qdisc prio 1: root"*) echo "the host qdisc prio is still on $dev"; exit 1 ;; esac""",
+    "none": r"""case "$root" in "qdisc prio 1: root"*|"qdisc fq 30: root"*) echo "the host qdisc $root is still on $dev"; exit 1 ;; esac""",
+    "fq": r"""case "$root" in "qdisc fq 30: root"*) ;; *) echo "the pacing qdisc fq is not the root of $dev"; exit 1 ;; esac""",
 }
 
 
@@ -4350,7 +4742,10 @@ def stage_node(node: dict, service: str, key: str, files: dict[str, str]) -> Non
     <key>/, the TLS files, the service's `.next` files and the activation
     script. Nothing is restarted, no kernel setting or qdisc is applied.
     Every file is checked on the node by its sha256; old builds are pruned
-    (PRUNE_BUILDS)."""
+    (PRUNE_BUILDS). A node with the check unit gets its build's
+    needletail-nodecheck (ensure_nodecheck)."""
+    if "check" in files:
+        ensure_nodecheck(key)
     binaries = build_files(key)
     staging = common.ARTIFACT_DIR / "stage" / node["name"]
     staging.mkdir(parents=True, exist_ok=True)
@@ -4653,8 +5048,9 @@ def install_nodecheck(node: dict) -> None:
 
 
 # A host's check unit (WARM_ONLY_ROLES) put in place when it differs,
-# enabled, and started: a no-op once it ran this boot, else it blocks until
-# the warm pass is done.
+# enabled, and started: a no-op once this boot's record is complete, else
+# run (again: a check that ran without a record stays active) and waited
+# for until the warm pass is done.
 WARM_HOST_SCRIPT = """set -u
 unit=/etc/systemd/system/{unit}
 cat >"$unit.tmp" <<'UNIT'
@@ -4662,7 +5058,8 @@ cat >"$unit.tmp" <<'UNIT'
 if cmp -s "$unit.tmp" "$unit"; then rm -f "$unit.tmp"
 else mv -f "$unit.tmp" "$unit" && systemctl daemon-reload; fi
 systemctl enable --quiet {unit} 2>/dev/null
-systemctl start {unit} || true
+if grep -qs '"complete": *true' {record}; then systemctl start {unit} || true
+else systemctl restart {unit} || true; fi
 """
 # Without node_warm: a host's check unit disabled and removed.
 UNWARM_HOST_SCRIPT = """unit=/etc/systemd/system/{unit}
@@ -4683,7 +5080,8 @@ def warm_host(node: dict, settings: dict) -> dict | None:
         common.ssh_text(node, UNWARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT), check=False,
                         timeout=60)
         return None
-    common.ssh_text(node, WARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT, text=text), check=False,
+    common.ssh_text(node, WARM_HOST_SCRIPT.format(unit=NODE_CHECK_UNIT, text=text,
+                                                  record=NODE_WARM_FILE), check=False,
                     timeout=check_timeout_s({**settings, "node_check_seconds": 0}, node) + 60)
     return read_warm_record(node)
 
@@ -5007,6 +5405,12 @@ class LinodeOps(mesh_ops.Ops):
         # {node: its warm record of this boot (NODE_WARM_FILE) or None},
         # read by install after each node's activation or warm pass.
         self.warm_records: dict[str, dict | None] = {}
+        # The hosts this command gave the warm pass to (node_warm on): each
+        # must end with a complete record (unwarmed_hosts, warm_gate).
+        self.warm_wanted: set[str] = set()
+        # The nodes this command's activations ran on (a roll's, a restart's):
+        # their warm records are read at its end (read_activated_warm).
+        self.activated: set[str] = set()
         path = common.state_path()
         self.lock_path = path.with_name(path.name + ".ops.lock")
         self.evidence_dir = common.ARTIFACT_DIR / "rolls"
@@ -5451,6 +5855,7 @@ class LinodeOps(mesh_ops.Ops):
         intended = self.activation_of(node, old, rollback)
         if intended is not None:
             record_deployed(self.full, {node: {**old, "activating": intended}})
+        self.activated.add(node)
         result = activate_node(self.full["nodes"][node], self.service(node), not_after_ms, rollback,
                                check_timeout_s(self.own_settings(node), self.full["nodes"][node]))
         self._ssh_at[node] = time.monotonic()
@@ -5536,6 +5941,8 @@ class LinodeOps(mesh_ops.Ops):
                     elif own.get("node_warm") and binaries:
                         install_nodecheck(node)
                     if role == "load" or own.get("node_warm"):
+                        if own.get("node_warm"):
+                            self.warm_wanted.add(name)
                         self.warm_records[name] = judge_warm(warm_host(node, own), own, node)
                         what.append(warm_word(self.warm_records[name], own))
                     return ", ".join(what) or "untouched"
@@ -5543,6 +5950,8 @@ class LinodeOps(mesh_ops.Ops):
                     stop_service(node)
                     return "stopped (not in the topology)"
                 stage_node(node, *plans[name])
+                if own.get("node_warm"):
+                    self.warm_wanted.add(name)
                 if name in standby:
                     stop_service(node)
                     if check_unit_wanted(own):
@@ -5651,6 +6060,40 @@ class LinodeOps(mesh_ops.Ops):
         else:
             common.ssh_text(record, f"systemctl enable --now {self.service(node)}.service")
         self.hold(node, out=False)
+        self.read_warm(node)
+
+    def read_warm(self, node: str) -> None:
+        """A node taken into service (start, a roll's surge edge, the
+        autoscaler's standby): this boot's warm record, judged and kept in
+        warm_records and the deployed record, when it has the warm pass."""
+        own = self.own_settings(node)
+        if not own.get("node_warm"):
+            return
+        record = self.full["nodes"][node]
+        self.warm_wanted.add(node)
+        self.warm_records[node] = judge_warm(read_warm_record(record), own, record)
+        record_deployed(self.full, {}, warm={node: warm_entry(self.warm_records[node])})
+
+    def read_activated_warm(self) -> None:
+        """The end of a roll or restart: this boot's warm record of every node
+        its activations ran on that has the warm pass (each activation runs
+        the check again when the record is not complete), read at once,
+        judged and kept as read_warm keeps one."""
+        names = sorted((name for name in self.activated if name in self.full["nodes"]
+                        and self.own_settings(name).get("node_warm")), key=mesh_ops.natural)
+        if not names:
+            return
+        nodes = [self.full["nodes"][name] for name in names]
+        try:
+            read = common.parallel(nodes, read_warm_record)
+        except RuntimeError:
+            read = {}
+        for name in names:
+            own, record = self.own_settings(name), self.full["nodes"][name]
+            self.warm_wanted.add(name)
+            self.warm_records[name] = judge_warm(read.get(name), own, record)
+        record_deployed(self.full, {}, warm={name: warm_entry(self.warm_records[name])
+                                             for name in names})
 
     def stop_node(self, node: str, not_after_ms: int | None = None) -> None:
         record = self.full["nodes"][node]
@@ -6013,6 +6456,44 @@ def bootstrap(nodes: list[dict]) -> None:
     print(f"bootstrapped {len(nodes)} hosts; every VLAN address is present", file=sys.stderr)
 
 
+def lab_topology(state: dict) -> dict:
+    """The lab's topology file (its plan_stream_mbit and other plan keys),
+    or {} when it is not there."""
+    path = pathlib.Path(state.get("topology_file") or "")
+    try:
+        return json.loads(path.read_text()) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def lab_egress_plan(full: dict, settings: dict, include_slots: bool = False) -> dict:
+    """egress_plan.plan of the lab: every node of the roster (the standby
+    edges and, with `include_slots`, the autoscale slots fed), by the
+    topology and fast-plane settings, the plan's rate and limits from the
+    settings over the topology file's."""
+    planned_state = active_state(full, settings)
+    nodes = list(roster(planned_state).values())
+    plan_settings = egress_plan.settings_from(lab_topology(full), settings)
+    fast = class_plan(settings).get("edge_fast_plane", False)
+    return egress_plan.plan(nodes, plan_settings, mode=topology_mode(settings),
+                            fast_plane=bool(fast), slots=slot_names(planned_state),
+                            include_slots=include_slots)
+
+
+def egress_report(full: dict, settings: dict, refuse: bool, allow: bool = False) -> dict:
+    """Print the lab's heavy egress plan; with `refuse`, exit when a node
+    passes its plan's limit unless `allow` (--allow-egress-over)."""
+    planned = lab_egress_plan(full, settings)
+    for line in egress_plan.lines(planned):
+        print(line)
+    refused = egress_plan.refusal(planned)
+    if refused:
+        if refuse and not allow:
+            sys.exit(f"plan refused: {refused}")
+        print(f"egress: {refused}", file=sys.stderr)
+    return planned
+
+
 def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     """Plan and render the services of every node but the standby edges;
     returns the whole lab state (push installs the tools on every node and
@@ -6036,6 +6517,14 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
     RENDER_BINARIES.update({"av-mesh": binaries_for("edge")[0],
                             "av-contrib": binaries_for("contributor")[0]})
     rendered = render(state, settings, plan)
+    # The flags probe (integration 6): every flag rendered must be known to
+    # its binary (render did that); push and restart also refuse binaries
+    # that do not run here, which `plan`, offline, names only.
+    try:
+        check_rendered_flags(rendered,
+                             strict=getattr(args, "command", None) in ("push", "restart"))
+    except ValueError as error:
+        raise SystemExit(f"error: {error}") from None
     unused = relay_tree(state, settings)["unused"]
     print(f"compiled {len(plan['services'])} relay services ({topology_mode(settings)} "
           f"topology); rendered {len(rendered)} service argument files; primary route "
@@ -6045,6 +6534,8 @@ def command_plan(args: argparse.Namespace) -> tuple[dict, dict, dict]:
           + (f"; standby edges (stopped): {', '.join(standby_edges(settings))}"
              if standby_edges(settings) else ""))
     print("contributor targets: " + " ".join(common.contributor_targets(state)))
+    egress_report(full, settings, refuse=getattr(args, "command", None) == "plan",
+                  allow=getattr(args, "allow_egress_over", False))
     return full, settings, rendered
 
 
@@ -6179,6 +6670,57 @@ def warm_summary(records: dict) -> str:
             + (f"; slow_host: {', '.join(slow)}" if slow else ""))
 
 
+# The exit status of a push, start, replace, roll or restart that did
+# everything else but left a host it manages (for a roll or restart --nodes:
+# a node it activated) without a complete warm record (node_warm on).
+EXIT_UNWARMED = 6
+
+
+def warm_complete(record: dict | None) -> bool:
+    """Whether a warm record is complete: written this boot, `complete`,
+    with a warm pass that ran and finished within its limit."""
+    if not record or record.get("complete") is not True:
+        return False
+    warm = record.get("warm")
+    return isinstance(warm, dict) and warm.get("ran", True) is not False \
+        and warm.get("finished") is not False
+
+
+def unwarmed_hosts(ops: "LinodeOps") -> dict:
+    """{host: its warm word} of the hosts this command gave the warm pass
+    (ops.warm_wanted) whose record is missing or not complete."""
+    return {name: warm_word(ops.warm_records.get(name))
+            for name in sorted(ops.warm_wanted, key=mesh_ops.natural)
+            if not warm_complete(ops.warm_records.get(name))}
+
+
+def warm_gate(ops: "LinodeOps", verb: str, allow: bool) -> str | None:
+    """The end of a push, start or replace with node_warm: None when every
+    host it manages has a complete warm record; else the problem that makes
+    it exit EXIT_UNWARMED, naming them (cmpd8: an unwarmed contributor's
+    guest stopped 1.03 s in a measured 4K run). With `allow`
+    (--allow-unwarmed) the hosts are printed and it goes on."""
+    missing = unwarmed_hosts(ops)
+    if not missing:
+        return None
+    named = ", ".join(f"{name} ({word})" for name, word in missing.items())
+    if allow:
+        print(f"{verb}: UNWARMED hosts, allowed by --allow-unwarmed (do not measure on them): "
+              f"{named}", file=sys.stderr)
+        return None
+    return (f"UNWARMED: {named}: no complete warm record. Everything else is done; run the "
+            f"check again (`push --nodes {','.join(missing)}`), or go on with "
+            "--allow-unwarmed")
+
+
+def ssh_silent(nodes: list[dict]) -> list[str]:
+    """The names of `nodes` whose sshd does not answer within the bound
+    (common.wait_ssh), in the tools' usual order."""
+    answering = set(common.wait_ssh(nodes))
+    return sorted((node["name"] for node in nodes if node["name"] not in answering),
+                  key=mesh_ops.natural)
+
+
 def command_push(args: argparse.Namespace) -> None:
     """Bootstrap, then stage and activate every node, role by role, parents
     first, on the roots' builds; the deployed record follows each role. Only
@@ -6201,7 +6743,18 @@ def command_push(args: argparse.Namespace) -> None:
     lab_tool_checked()
     with ops_locked():
         ensure_tls()
+        # A lab that has just come up: Linode says `running` before the guest
+        # has booted, and a push that starts at once is refused by a host a
+        # minute old (cmpd8, tok-dist-a). Every node's sshd answers first.
+        # It is asked just before push's first remote step, so a push that is
+        # refused for its settings still touches no host.
+        def every_sshd_answers() -> None:
+            silent = ssh_silent(nodes)
+            if silent:
+                sys.exit(f"push: no ssh on {', '.join(silent)} within "
+                         f"{common.SSH_WAIT_S:.0f} s; nothing was pushed")
         if not args.skip_bootstrap:
+            every_sshd_answers()
             bootstrap(nodes)
         args.remeasure = args.remeasure or not (common.ARTIFACT_DIR / "routes.json").is_file()
         full, settings, _rendered = command_plan(args)
@@ -6211,6 +6764,8 @@ def command_push(args: argparse.Namespace) -> None:
         if problem:
             print(f"push refused: {problem}", file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
+        if args.skip_bootstrap:
+            every_sshd_answers()
         ops = LinodeOps(full, settings)
         tiers = sorted({mesh_ops.ROLE_TIER[node["role"]] for node in nodes
                         if node["role"] in mesh_ops.ROLE_TIER})
@@ -6225,8 +6780,12 @@ def command_push(args: argparse.Namespace) -> None:
         problems = react_to_slow_hosts(ops, began, getattr(args, "slow_host", "report"))
         if ops.warm_records:
             print(warm_summary(ops.warm_records), file=sys.stderr)
+        unwarmed = warm_gate(ops, "push", getattr(args, "allow_unwarmed", False))
         if problems:
-            sys.exit("push: " + "; ".join(problems))
+            sys.exit("push: " + "; ".join(problems + ([unwarmed] if unwarmed else [])))
+        if unwarmed:
+            print(f"push: {unwarmed}", file=sys.stderr)
+            sys.exit(EXIT_UNWARMED)
 
 
 def command_restart(args: argparse.Namespace) -> None:
@@ -6241,8 +6800,9 @@ def command_restart(args: argparse.Namespace) -> None:
             sys.exit("restart takes --nodes or --roles, not both")
         names = names_of(args.nodes)
         ops = linode_ops(args)
-        sys.exit(mesh_ops.restart_nodes(ops, names, options=engine_options(args),
-                                        resume=args.resume))
+        code = mesh_ops.restart_nodes(ops, names, options=engine_options(args),
+                                      resume=args.resume)
+        sys.exit(engine_warm_exit(ops, "restart", code, args))
     if args.rollback or args.hold_s or args.resume:
         sys.exit("--rollback, --hold-s and --resume go with --nodes")
     print("restart --roles restarts every node of a role at once; it is not a rolling restart "
@@ -6254,20 +6814,64 @@ def command_restart(args: argparse.Namespace) -> None:
         roles = args.roles.split(",") if args.roles else list(SERVICE_ROLES)
         names = [node["name"] for role in SERVICE_ROLES if role in roles
                  for node in common.nodes_by_role(full, role)]
+        ops = LinodeOps(full, settings)
         try:
-            LinodeOps(full, settings).install(names, None)
+            ops.install(names, None)
         except mesh_ops.Refused as refused:
             print(refused, file=sys.stderr)
             sys.exit(mesh_ops.EXIT_REFUSED)
+        unwarmed = warm_gate(ops, "restart", getattr(args, "allow_unwarmed", False))
+        if unwarmed:
+            print(f"restart: {unwarmed}", file=sys.stderr)
+            sys.exit(EXIT_UNWARMED)
+
+
+def engine_warm_exit(ops: "LinodeOps", verb: str, code: int, args: argparse.Namespace) -> int:
+    """The exit status of an engine change (roll, restart --nodes) after
+    the warm gate of push: the records of the nodes its activations ran on
+    are read, and those without a complete one named; a change that was
+    done exits EXIT_UNWARMED for them unless --allow-unwarmed (another
+    status stays, the hosts named)."""
+    ops.read_activated_warm()
+    unwarmed = warm_gate(ops, verb, getattr(args, "allow_unwarmed", False))
+    if unwarmed:
+        print(f"{verb}: {unwarmed}", file=sys.stderr)
+        if code == mesh_ops.EXIT_DONE:
+            return EXIT_UNWARMED
+    return code
 
 
 def command_roll(args: argparse.Namespace) -> None:
     """`roll edges|forwarders|contributors|all` (C 3.5): one node at a time
     onto the roots' build, through the engine (mesh_ops.roll). stdout
-    carries the change's two marks only; the exit status is the engine's."""
+    carries the change's two marks only; the exit status is the engine's,
+    or EXIT_UNWARMED when it was done but left a node it activated without
+    a complete warm record (engine_warm_exit)."""
     ops = linode_ops(args)
-    sys.exit(mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
-                           options=engine_options(args), resume=args.resume))
+    code = mesh_ops.roll(ops, args.tier, nodes=names_of(args.nodes), sites=names_of(args.sites),
+                         options=engine_options(args), resume=args.resume)
+    sys.exit(engine_warm_exit(ops, "roll", code, args))
+
+
+def command_drain(args: argparse.Namespace) -> None:
+    """`drain --nodes X [--surge]` (tools6): a serving edge drained only when
+    the other serving edges of its site have room for it (mesh_ops.drain:
+    the legs at their cost and the reported load under the target); without
+    room refused (exit 2) with the numbers, or with --surge after the site's
+    standby edge or slot is started, ready and warmed (and with a surge
+    edge started, an unwarmed one exits 6 as roll does). The edge stays
+    drained: resume-node takes it back."""
+    names = names_of(args.nodes) or []
+    if len(names) != 1:
+        sys.exit("drain --nodes takes one edge")
+    ops = linode_ops(args)
+    if getattr(args, "nice", 0):
+        mesh_ops.renice(args.nice)
+    options = mesh_ops.Options(gate_timeout_s=args.gate_timeout_s,
+                               ready_timeout_s=args.ready_timeout_s, marks_file=args.marks,
+                               node_marks_file=args.node_marks, poll_s=args.poll_s)
+    code = mesh_ops.drain(ops, names[0], surge=args.surge, options=options)
+    sys.exit(engine_warm_exit(ops, "drain", code, args) if args.surge else code)
 
 
 def command_replace(args: argparse.Namespace) -> None:
@@ -6300,9 +6904,15 @@ def command_replace(args: argparse.Namespace) -> None:
         sys.exit(mesh_ops.EXIT_REFUSED)
     ops.replacing = {"mode": args.mode, "no_slot": args.no_slot, "resume": args.resume,
                      "budget_usd": args.budget_usd, "spent_before_usd": args.spent_before_usd}
-    sys.exit(mesh_ops.replace(ops, name, mode=args.mode, no_slot=args.no_slot,
-                              keep_slot=args.keep_slot, resume=args.resume,
-                              options=engine_options(args)))
+    code = mesh_ops.replace(ops, name, mode=args.mode, no_slot=args.no_slot,
+                            keep_slot=args.keep_slot, resume=args.resume,
+                            options=engine_options(args))
+    unwarmed = warm_gate(ops, "replace", getattr(args, "allow_unwarmed", False))
+    if unwarmed:
+        print(f"replace: {unwarmed}", file=sys.stderr)
+        if code == mesh_ops.EXIT_DONE:
+            code = EXIT_UNWARMED
+    sys.exit(code)
 
 
 def command_change(args: argparse.Namespace) -> None:
@@ -6349,6 +6959,10 @@ def command_start(args: argparse.Namespace) -> None:
     print(f"started {', '.join(names)} on "
           + ", ".join(sorted({ops.staged[name]['build'] for name in names}))
           + "; no other node was restarted")
+    unwarmed = warm_gate(ops, "start", getattr(args, "allow_unwarmed", False))
+    if unwarmed:
+        print(f"start: {unwarmed}", file=sys.stderr)
+        sys.exit(EXIT_UNWARMED)
 
 
 def command_stop(args: argparse.Namespace) -> None:
@@ -6393,13 +7007,19 @@ print(round(best))")
 echo "$service $active restarts=$restarts mem_mb=$((${memory:-0}/1048576)) clock_offset_ms=$offset steal_pct=$steal load=$(cut -d' ' -f1 /proc/loadavg) cpu_mb_s=$speed"
 echo "THP $(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null)"
 echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
-""", check=False, timeout=60)
+""" + STATUS_NET_PROBE + STATUS_REPAIR_PROBE, check=False, timeout=60)
 
     results = common.parallel(list(state["nodes"].values()), probe)
     warm_lines = {}
+    repair_probes = {}
     deployed_settings = {**DEFAULT_SETTINGS,
                          **((state.get("deployed") or {}).get("settings") or {})}
+    measured = {}
+    lanes = {}
     for name, text in list(results.items()):
+        text, measured[name] = split_net_probe(text)
+        text, lanes[name] = split_lane_probe(text)
+        text, repair_probes[name] = split_repair_probe(text)
         results[name], warm_lines[name] = split_status_probe(
             text, node_own_settings(deployed_settings, name), state["nodes"][name])
     targets = {name: (node["public_ipv4"],
@@ -6410,26 +7030,87 @@ echo "WARM $(tr -d '\n' < /run/needletail/node-warm.json 2>/dev/null)"
     recorded = (state.get("deployed") or {}).get("nodes") or {}
     speeds = {}
     for name, line in results.items():
-        if "cpu_mb_s=" in line:
-            speeds[name] = float(line.rsplit("cpu_mb_s=", 1)[1] or 0)
+        found = re.search(r"cpu_mb_s=(\d+(?:\.\d+)?)", line)
+        if found:
+            speeds[name] = float(found.group(1))
     median = sorted(speeds.values())[len(speeds) // 2] if speeds else 0
     slow = sorted(name for name, speed in speeds.items() if speed < 0.75 * median)
+    wanted = status_warm_wanted(state)
+    try:
+        planned = lab_egress_plan(state, deployed_settings)["nodes"]
+    except (Exception, SystemExit):  # noqa: BLE001 - status reads what it can
+        planned = {}
     for name in sorted(results):
         node = state["nodes"][name]
         flag = "  <-- SLOW shared CPU" if name in slow else ""
+        if name in wanted and not warm_complete(warm_lines[name][1]):
+            flag += "  <-- UNWARMED (no complete warm record: do not measure)"
         served = ""
         if name in targets:
             code, document = answers.get(name, (None, None))
             served = node_summary(document if code == 200 else None, recorded.get(name))
-        print(f"{name:<18} {node['role']:<12} {results[name]}{served}{flag} "
+            served += status_repair(node["role"], repair_probes.get(name),
+                                    document if code == 200 else None)
+            if node["role"] != "contributor":
+                plane = repair_probes.get(name)
+                served += send_summary(send_fields(plane if isinstance(plane, dict) else None,
+                                                   lanes.get(name),
+                                                   document if code == 200 else None))
+        print(f"{name:<18} {node['role']:<12} {results[name]}"
+              f"{egress_summary(measured.get(name), planned.get(name))}{served}{flag} "
               f"{warm_lines[name][0]}")
     # Shared-CPU hosts vary by 2x in single-thread speed without reporting steal.
     print(f"median single-thread speed {median:.0f} MB/s; slow nodes "
           f"(<75% of median): {' '.join(slow) or 'none'}")
-    for line in warm_status(state, {name: item[1] for name, item in warm_lines.items()}):
+    for line in warm_status(state, {name: item[1] for name, item in warm_lines.items()},
+                            wanted):
         print(line)
     for line in deployed_summary(state):
         print(line)
+
+
+# status's probe of a node's interfaces: every interface but lo, received and
+# sent bytes, twice a second apart (/proc/net/dev), as one "NET" line:
+# "NET <t0> <rx0> <tx0> <t1> <rx1> <tx1>".
+STATUS_NET_PROBE = (
+    "net_sample() { printf '%s ' \"$(date +%s.%N)\"; awk 'NR>2 {gsub(\":\", \" \"); "
+    "if ($1 != \"lo\") {rx += $2; tx += $10}} END {printf \"%.0f %.0f\", rx, tx}' "
+    "/proc/net/dev; }\n"
+    'echo "NET $(net_sample) $(sleep 1; net_sample)"\n')
+
+
+def split_net_probe(text: str) -> tuple[str, tuple[float, float] | None]:
+    """status's probe output less its NET line, and the node's measured
+    (egress, ingress) in Mbit/s over that second; None when the line is
+    absent or does not parse."""
+    lines, found = [], None
+    for line in (text or "").splitlines():
+        if line == "NET" or line.startswith("NET "):
+            try:
+                t0, rx0, tx0, t1, rx1, tx1 = (float(item) for item in line.split()[1:7])
+                span = t1 - t0
+                if span > 0:
+                    found = (round((tx1 - tx0) * 8 / 1e6 / span, 1),
+                             round((rx1 - rx0) * 8 / 1e6 / span, 1))
+            except ValueError:
+                found = None
+            continue
+        lines.append(line)
+    return "\n".join(lines), found
+
+
+def egress_summary(measured: tuple[float, float] | None, planned: dict | None) -> str:
+    """status's egress segment of a node: what it sent and received over a
+    second (Mbit/s), beside its planned heavy egress and its plan's limit
+    (lab_egress_plan)."""
+    text = (" net out=- in=-" if measured is None
+            else f" net out={measured[0]:.1f} in={measured[1]:.1f}Mbit/s")
+    if planned:
+        limit = "-" if planned.get("limit") is None else f"{planned['limit']:.0f}"
+        text += f" plan={planned['mbit']:.0f}/{limit}"
+        if measured is not None and planned.get("limit") and measured[0] > planned["limit"]:
+            text += " <-- EGRESS OVER LIMIT"
+    return text
 
 
 def split_status_probe(text: str, settings: dict | None = None,
@@ -6438,9 +7119,14 @@ def split_status_probe(text: str, settings: dict | None = None,
     its warm record) from the probe's THP and WARM lines, the record judged
     by the deploy's slow-host rule (judge_warm) with `settings`."""
     lines = (text or "").splitlines()
-    main = [line for line in lines if not line.startswith(("THP ", "WARM "))]
-    thp = next((line[4:].strip() for line in lines if line.startswith("THP ")), "") or "-"
-    record = next((parse_warm_record(line[5:]) for line in lines if line.startswith("WARM ")),
+    # A host with no warm record prints a bare "WARM " as its last line, and the
+    # probe's output arrives with its trailing space stripped: the word alone is
+    # still the probe's line, never part of the service line.
+    def tagged(line: str, tag: str) -> bool:
+        return line == tag or line.startswith(tag + " ")
+    main = [line for line in lines if not (tagged(line, "THP") or tagged(line, "WARM"))]
+    thp = next((line[4:].strip() for line in lines if tagged(line, "THP")), "") or "-"
+    record = next((parse_warm_record(line[5:]) for line in lines if tagged(line, "WARM")),
                   None)
     if settings is not None:
         record = judge_warm(record, settings, node)
@@ -6449,16 +7135,40 @@ def split_status_probe(text: str, settings: dict | None = None,
                             record)
 
 
-def warm_status(state: dict, records: dict) -> list[str]:
-    """status's lines on the warm pass: hosts whose record is not complete,
-    the slow hosts with what push does with each (slow_host_decision: an
-    edge replaced once, every other role reported) and the edges replaced
-    for it, and the deployed transparent_hugepage setting."""
+def status_warm_wanted(state: dict) -> set[str]:
+    """The hosts that should have a complete warm record by the deployed
+    settings (node_warm on for the host): every load and LiveKit host, and
+    every node of a tier that is deployed or held out (a backbone the
+    topology does not use runs nothing and is not one)."""
+    deployed = state.get("deployed") or {}
+    settings = {**DEFAULT_SETTINGS, **(deployed.get("settings") or {})}
+    running = set(deployed.get("nodes") or {}) | set(standby_edges(settings))
+    return {name for name, node in state["nodes"].items()
+            if node_own_settings(settings, name).get("node_warm")
+            and (node.get("role") in WARM_ONLY_ROLES or name in running)}
+
+
+def warm_status(state: dict, records: dict, wanted: set[str] | None = None) -> list[str]:
+    """status's lines on the warm pass: the UNWARMED hosts (`wanted`, which
+    should have one, without a complete record) and other hosts whose
+    record is not complete, the slow hosts with what push does with each
+    (slow_host_decision: an edge replaced once, every other role reported)
+    and the edges replaced for it, and the deployed transparent_hugepage
+    setting."""
     ledger = slow_hosts_ledger(state)
     lines = []
-    missing = sorted((name for name, record in records.items()
-                      if not (record or {}).get("complete")), key=mesh_ops.natural)
+    wanted = set(wanted or ())
+    unwarmed = sorted((name for name in records if name in wanted
+                       and not warm_complete(records[name])), key=mesh_ops.natural)
+    missing = sorted((name for name, record in records.items() if name not in unwarmed
+                      and not (record or {}).get("complete")), key=mesh_ops.natural)
+    if unwarmed:
+        lines.append(f"warm pass: UNWARMED {', '.join(unwarmed)}: no complete warm record; "
+                     "do not measure on this lab until `push --nodes "
+                     f"{','.join(unwarmed)}` warms them")
     lines.append("warm pass: " + (f"not complete on {', '.join(missing)}" if missing
+                                  else f"complete on all {len(records) - len(unwarmed)} "
+                                       "other host(s)" if unwarmed
                                   else f"complete on all {len(records)} host(s)"))
     proofs = {name: touch_proof(record) for name, record in records.items()}
     unproved = sorted((name for name, proof in proofs.items() if proof and proof != "proved"),
@@ -6535,7 +7245,382 @@ def memory_summary(document) -> str:
     counts = [f"{key}={memory[key]}" for key in ("soft_entries", "hard_entries",
                                                   "refused_large_playlists", "socket_clamped")
               if memory.get(key)]
+    if _number(memory.get("socket_budget_bytes")) is not None:
+        counts.append(f"sockets={mb('socket_asked_bytes')}/{mb('socket_budget_bytes')}")
+    classes = memory.get("socket_classes")
+    if isinstance(classes, list) and classes and all(isinstance(item, dict) for item in classes):
+        # av-mesh rm/send240: each socket class's share (video receive,
+        # cache mesh), what it asked and its clamped growths.
+        counts.append("socket_classes=" + ",".join(
+            f"{round((item.get('asked_bytes') or 0) / 1048576)}/"
+            f"{round((item.get('reserve_bytes') or 0) / 1048576)}MB"
+            + (f"!{item['clamped']}" if item.get("clamped") else "") for item in classes))
     return text + (" " + " ".join(counts) if counts else "")
+
+
+# ------------------------------------------------------------ repair counters
+# 4k-repair: what a mesh node serves of its part repair, decode pool, tees
+# and repair stores, and what the contributor serves of its answers. A
+# mesh node's are in /api/mesh/local `relay_session.fast_plane`
+# (FastPlaneSnapshot) and /api/node `memory` (mem_guard MemorySnapshot);
+# the contributor's in its /metrics (and its store, when served, in its
+# /api/node). A field an older binary does not serve is absent, never 0.
+PART_REPAIR_FIELDS = (
+    "requests", "retries", "symbols_asked", "whole_parts_asked", "gap_parts",
+    "recovered_parts", "gave_up_parts", "asks", "answers", "answer_symbols", "busy",
+    "stored_parts", "link_repair_symbols", "regenerated_symbols",
+    "refused_not_admitted", "refused_limited", "refused_stale", "window_spent",
+    "repair_panics")
+DECODE_POOL_FIELDS = ("workers", "decodes", "failures", "decode_us_max", "inline",
+                      "queued_max", "inline_bytes_limited", "queue_bytes", "queue_budget_bytes")
+FAST_PLANE_REPAIR_FIELDS = (
+    "video_parent_loss_ppm", "parent_loss_ppm", "repair_trimmed", "not_admitted",
+    "audio_tee_cpu_us", "video_tee_cpu_us", "video_tee_lag_max_us", "audio_tee_lag_max_us",
+    "tee_dropped", "video_tee_parts_shed")
+MEMORY_REPAIR_FIELDS = ("part_store_bytes", "part_store_budget_bytes", "decode_queue_bytes",
+                        "decode_queue_budget_bytes", "repair_plans_bytes",
+                        "repair_plans_budget_bytes", "repair_shed_bytes")
+# The fields above that are a level or a maximum, not a count since start
+# (a run's usage takes their value at the end, not a difference).
+REPAIR_LEVELS = {"part_repair.stored_parts", "decode_pool.workers",
+                 "decode_pool.decode_us_max", "decode_pool.queued_max",
+                 "decode_pool.queue_bytes", "decode_pool.queue_budget_bytes",
+                 "parent_lanes.not_admitted",
+                 "video_parent_loss_ppm", "parent_loss_ppm", "video_tee_lag_max_us",
+                 "audio_tee_lag_max_us", *(f"memory.{key}" for key in MEMORY_REPAIR_FIELDS)}
+# The contributor's /metrics names (av-contrib 4k-repair) and their keys
+# here; its store's bytes under either name it may serve them by.
+CONTRIB_REPAIR_METRICS = {
+    "av_contrib_relay_asks_answered": "asks_answered",
+    "av_contrib_relay_answer_symbols": "answer_symbols",
+    # av-contrib rm/int6 (review M1): asks dropped unanswered (not from the
+    # lane's forwarder), answered Busy (the asker had its share) or Missing
+    # (the part's answer window spent), and answers that panicked.
+    "av_contrib_relay_answer_refused_not_admitted": "answer_refused_not_admitted",
+    "av_contrib_relay_answer_refused_limited": "answer_refused_limited",
+    "av_contrib_relay_answer_refused_window_spent": "answer_refused_window_spent",
+    "av_contrib_relay_answer_panics": "answer_panics",
+    "av_contrib_part_store_bytes": "memory.part_store_bytes",
+    "av_contrib_relay_part_store_bytes": "memory.part_store_bytes",
+    "av_contrib_part_store_budget_bytes": "memory.part_store_budget_bytes",
+    "av_contrib_relay_part_store_budget_bytes": "memory.part_store_budget_bytes",
+}
+CONTRIB_REPAIR_LEVELS = {"memory.part_store_bytes", "memory.part_store_budget_bytes"}
+CONTRIB_ANSWER_KEYS = ("asks_answered", "answer_symbols", "answer_refused_not_admitted",
+                       "answer_refused_limited", "answer_refused_window_spent", "answer_panics")
+
+
+def _number(value):
+    """`value` if a JSON number (not a bool), else None."""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def repair_fields(fast_plane, memory=None) -> dict:
+    """A mesh node's repair fields, flat: `part_repair.<f>`, `decode_pool.<f>`,
+    the fast plane's own (`video_parent_loss_ppm` a [primary, secondary]
+    list) and `memory.<f>`, from its fast plane snapshot and its /api/node
+    `memory`. A field not served, or not a number, is left out."""
+    out: dict = {}
+    plane = fast_plane if isinstance(fast_plane, dict) else {}
+    for group, names in (("part_repair", PART_REPAIR_FIELDS),
+                         ("decode_pool", DECODE_POOL_FIELDS)):
+        block = plane.get(group)
+        if isinstance(block, dict):
+            for name in names:
+                if _number(block.get(name)) is not None:
+                    out[f"{group}.{name}"] = block[name]
+    for name in FAST_PLANE_REPAIR_FIELDS:
+        value = plane.get(name)
+        if isinstance(value, list):
+            values = [_number(item) for item in value]
+            if values and all(item is not None for item in values):
+                out[name] = values
+        elif _number(value) is not None:
+            out[name] = value
+    # Datagrams no session admitted, per parent lane of the audio class
+    # (parent_lanes[].not_admitted): [primary, secondary].
+    lanes = plane.get("parent_lanes")
+    if isinstance(lanes, list) and lanes:
+        values = [_number(lane.get("not_admitted")) if isinstance(lane, dict) else None
+                  for lane in lanes]
+        if all(value is not None for value in values):
+            out["parent_lanes.not_admitted"] = values
+    if isinstance(memory, dict):
+        for name in MEMORY_REPAIR_FIELDS:
+            if _number(memory.get(name)) is not None:
+                out[f"memory.{name}"] = memory[name]
+    return out
+
+
+def parse_metrics(text) -> dict[str, float]:
+    """Prometheus text: {metric name: value} of each sample line without
+    labels (comments, labelled and malformed lines left out)."""
+    out = {}
+    for line in (text or "").replace(";", "\n").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or line.startswith("#") or "{" in parts[0]:
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError:
+            continue
+        out[parts[0]] = int(value) if value.is_integer() else value
+    return out
+
+
+def contributor_repair_fields(metrics, document=None) -> dict:
+    """The contributor's repair fields: `asks_answered`, `answer_symbols` and
+    `memory.part_store_bytes`/`_budget_bytes` from its /metrics (text, or
+    parse_metrics' dict), the store also from its /api/node `memory` or top
+    level when served there. Absent when not served."""
+    samples = metrics if isinstance(metrics, dict) else parse_metrics(metrics)
+    out = {}
+    for name, key in CONTRIB_REPAIR_METRICS.items():
+        if _number(samples.get(name)) is not None:
+            out[key] = samples[name]
+    if isinstance(document, dict):
+        for block in (document.get("memory"), document.get("relay_answers"), document):
+            if not isinstance(block, dict):
+                continue
+            for name in ("part_store_bytes", "part_store_budget_bytes"):
+                if f"memory.{name}" not in out and _number(block.get(name)) is not None:
+                    out[f"memory.{name}"] = block[name]
+        # Its /api/node `relay_answers` (av-contrib rm/int6) where /metrics
+        # did not give a count.
+        answers = document.get("relay_answers")
+        if isinstance(answers, dict):
+            for key in CONTRIB_ANSWER_KEYS:
+                if key not in out and _number(answers.get(key)) is not None:
+                    out[key] = answers[key]
+    return out
+
+
+def repair_usage(before: dict, after: dict, levels=None) -> dict:
+    """Over a run: each count's difference, each level's (REPAIR_LEVELS) value
+    at the end; a field missing at either end is left out (a count) or
+    taken from the end (a level)."""
+    levels = REPAIR_LEVELS | CONTRIB_REPAIR_LEVELS if levels is None else levels
+    out = {}
+    for key, value in after.items():
+        if key in levels or isinstance(value, list):
+            out[key] = value
+        elif _number(before.get(key)) is not None:
+            out[key] = value - before[key]
+    return out
+
+
+def _field(fields: dict, key: str, scale: float = 1.0) -> str:
+    value = fields.get(key)
+    if value is None:
+        return "-"
+    if isinstance(value, list):
+        return "/".join(str(round(item / scale)) for item in value)
+    return str(round(value / scale)) if scale != 1.0 else str(value)
+
+
+def repair_summary(fields: dict) -> str:
+    """status's one line of a mesh node's repair fields (repair_fields);
+    "" when it serves none (an older build, a node off the fast plane)."""
+    if not fields:
+        return ""
+    get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
+    refused = [get(f"part_repair.refused_{kind}")
+               for kind in ("not_admitted", "limited", "stale")]
+    loss = (f"{get('video_parent_loss_ppm')}ppm" if "video_parent_loss_ppm" in fields else "-")
+    lag = "/".join((get("audio_tee_lag_max_us", 1000.0), get("video_tee_lag_max_us", 1000.0)))
+    # First, for it must be 0 in a run (review M5: a primary that is not
+    # promoted has every answer and link repair dropped here).
+    admitted = f" not_admitted={get('not_admitted')}"
+    if "parent_lanes.not_admitted" in fields:
+        admitted += f"(lanes {get('parent_lanes.not_admitted')})"
+    if (fields.get("not_admitted") or 0) > 0 or any(fields.get("parent_lanes.not_admitted") or []):
+        admitted += " <-- NOT ADMITTED (must be 0)"
+    panics = (f" PANICS={fields['part_repair.repair_panics']}"
+              if fields.get("part_repair.repair_panics") else "")
+    return (f"{admitted} repair req={get('part_repair.requests')}/{get('part_repair.retries')}"
+            f" asks={get('part_repair.asks')} answers={get('part_repair.answers')}"
+            f" sym={get('part_repair.answer_symbols')}"
+            f" link={get('part_repair.link_repair_symbols')}"
+            f" regen={get('part_repair.regenerated_symbols')}"
+            f" rec={get('part_repair.recovered_parts')}"
+            f" gaveup={get('part_repair.gave_up_parts')}"
+            f" refused={'/'.join(refused)}"
+            f" pool={get('decode_pool.decodes')}/{get('decode_pool.inline')}"
+            f"/{get('decode_pool.failures')}"
+            f" tee lag a/v={lag}ms drop={get('tee_dropped')}"
+            f" shed={get('video_tee_parts_shed')}"
+            f" loss p/s={loss} small={get('parent_loss_ppm')}ppm"
+            f" trimmed={get('repair_trimmed')} spent={get('part_repair.window_spent')}{panics}"
+            f" store={get('memory.part_store_bytes', 1048576.0)}"
+            f"/{get('memory.part_store_budget_bytes', 1048576.0)}MB"
+            f" queue={get('memory.decode_queue_bytes', 1048576.0)}"
+            f"/{get('memory.decode_queue_budget_bytes', 1048576.0)}MB"
+            f" repair_shed={get('memory.repair_shed_bytes', 1048576.0)}MB")
+
+
+def contributor_repair_summary(fields: dict) -> str:
+    """status's line of the contributor's answers and store
+    (contributor_repair_fields); "" when it serves none."""
+    if not fields:
+        return ""
+    get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
+    refused = ""
+    if any(f"answer_refused_{kind}" in fields for kind in ("not_admitted", "limited",
+                                                          "window_spent")):
+        refused = (f" refused={get('answer_refused_not_admitted')}"
+                   f"/{get('answer_refused_limited')}/{get('answer_refused_window_spent')}")
+    panics = (f" PANICS={fields['answer_panics']}" if fields.get("answer_panics") else "")
+    return (f" repair answered={get('asks_answered')} sym={get('answer_symbols')}{refused}"
+            f"{panics}"
+            f" store={get('memory.part_store_bytes', 1048576.0)}"
+            f"/{get('memory.part_store_budget_bytes', 1048576.0)}MB")
+
+
+# ------------------------------------------------------------ send side
+# What a node's send path refused or held (cmpd8: the fast lane's WouldBlock
+# was what failed a viewer), from what it serves today: the fast plane's
+# relay and lease senders (/api/mesh/local relay_session.fast_plane:
+# would_block, send_errors, lease_children's), the client fast lane
+# (/api/assignment client_udp.fast_lane: would_block, send_errors,
+# given_back) and, when a build serves them (av-mesh rm/send240), the class
+# threads' kept datagrams (`child_send_defer` in the fast plane, `send_defer`
+# in the fast lane: deferred, expired) and /api/node's `pulls` and
+# memory.send_defer_bytes. A field not served is absent, never 0.
+SEND_DEFER_FIELDS = ("would_block", "deferred", "deferred_sent", "expired", "expired_parts",
+                     "refused", "errors", "kept_bytes", "high_water_bytes", "handed_parts")
+PULL_FIELDS = ("holes", "requests", "requested_parts", "second_parent", "not_requested_shed",
+               "not_requested_lagging", "not_requested_budget", "pulled_bytes",
+               "pulled_bps_1s", "budget_bps")
+
+
+def send_fields(fast_plane=None, fast_lane=None, document=None) -> dict:
+    """A node's send-side fields, flat (`relay.*`, `lease.*`, `relay_defer.*`,
+    `lane.*`, `lane_defer.*`, `node_defer.*`, `pulls.*`,
+    `memory.send_defer_bytes`); absent when not served."""
+    out: dict = {}
+
+    def take(prefix: str, block, names) -> None:
+        if isinstance(block, dict):
+            for name in names:
+                if _number(block.get(name)) is not None:
+                    out[f"{prefix}.{name}"] = block[name]
+
+    plane = fast_plane if isinstance(fast_plane, dict) else {}
+    take("relay", plane, ("would_block", "send_errors"))
+    take("lease", plane.get("lease_children"), ("would_block", "send_errors"))
+    take("relay_defer", plane.get("child_send_defer"), SEND_DEFER_FIELDS)
+    lane = fast_lane if isinstance(fast_lane, dict) else {}
+    take("lane", lane, ("would_block", "send_errors", "given_back"))
+    take("lane_defer", lane.get("send_defer"), SEND_DEFER_FIELDS)
+    node = document if isinstance(document, dict) else {}
+    take("node_defer", node.get("send_defer"), SEND_DEFER_FIELDS)
+    take("pulls", node.get("pulls"), PULL_FIELDS)
+    take("memory", node.get("memory"), ("send_defer_bytes",))
+    # rm/cpuadmit's admission term and its refusals and sheds.
+    admit = node.get("cpu_admit") if isinstance(node.get("cpu_admit"), dict) else None
+    take("cpu_admit", admit, CPU_ADMIT_FIELDS)
+    if admit is not None:
+        take("cpu_admit.refused", admit.get("refused"), ("cpus", "thread", "http", "pending"))
+    return out
+
+
+CPU_ADMIT_FIELDS = ("load_permille", "measured_permille", "cpus_busy_permille", "datagram_ns",
+                    "admitted", "shed_rounds", "shed_hints", "spilled")
+
+
+def send_summary(fields: dict) -> str:
+    """status's segment of a node's send side (send_fields); "" when it
+    serves none."""
+    if not fields:
+        return ""
+    get = lambda key, scale=1.0: _field(fields, key, scale)  # noqa: E731
+    text = (f" send wb relay/lease/lane={get('relay.would_block')}/{get('lease.would_block')}"
+            f"/{get('lane.would_block')} err={get('relay.send_errors')}/"
+            f"{get('lease.send_errors')}/{get('lane.send_errors')}"
+            f" given_back={get('lane.given_back')}")
+    for prefix in ("relay_defer", "lane_defer", "node_defer"):
+        if any(key.startswith(prefix + ".") for key in fields):
+            text += (f" {prefix}={get(prefix + '.deferred')}/{get(prefix + '.expired')}"
+                     f"(deferred/expired)")
+    if any(key.startswith("pulls.") for key in fields):
+        text += (f" pulls={get('pulls.requests')} shed_not_asked="
+                 f"{get('pulls.not_requested_shed')} pulled={get('pulls.pulled_bps_1s', 1e6)}"
+                 "Mbit/s")
+    if "memory.send_defer_bytes" in fields:
+        text += f" defer_pool={get('memory.send_defer_bytes', 1048576.0)}MB"
+    if "cpu_admit.load_permille" in fields:
+        text += (f" cpu_admit={get('cpu_admit.load_permille')}\u2030 busy="
+                 f"{get('cpu_admit.cpus_busy_permille')}\u2030 dgram={get('cpu_admit.datagram_ns')}ns"
+                 f" refused cpus/thread/http/pending={get('cpu_admit.refused.cpus')}/"
+                 f"{get('cpu_admit.refused.thread')}/{get('cpu_admit.refused.http')}/"
+                 f"{get('cpu_admit.refused.pending')} shed={get('cpu_admit.shed_hints')}"
+                 f" spilled={get('cpu_admit.spilled')}")
+    return text
+
+
+# status's probe reads a node's own repair counters: a mesh node's fast
+# plane snapshot (jq -c, one line) and the contributor's /metrics lines of
+# CONTRIB_REPAIR_METRICS (joined by ";"), as one "REPAIR ..." line.
+STATUS_REPAIR_PROBE = (
+    'if [ "$service" = needletail-mesh ]; then\n'
+    f'  echo "REPAIR $(curl -sk --max-time 3 https://127.0.0.1:{HTTP_PORT}/api/mesh/local '
+    "2>/dev/null | jq -c '.relay_session.fast_plane // null' 2>/dev/null)\"\n"
+    f'  echo "LANE $(curl -sk --max-time 3 https://127.0.0.1:{HTTP_PORT}/api/assignment '
+    "2>/dev/null | jq -c '[.. | objects | select(has(\"given_back\") and "
+    "has(\"would_block\"))][0] // null' 2>/dev/null)\"\n"
+    'elif [ "$service" = needletail-contrib ]; then\n'
+    f'  echo "REPAIR $(curl -sk --max-time 3 https://127.0.0.1:{CONTRIB_HTTP_PORT}/metrics '
+    "2>/dev/null | grep -E '^(" + "|".join(CONTRIB_REPAIR_METRICS) + ")[ {]' "
+    "| tr '\\n' ';')\"\n"
+    "fi\n")
+
+
+def split_repair_probe(text: str) -> tuple[str, object]:
+    """status's probe output less its REPAIR line, and that line's content:
+    a mesh node's fast plane snapshot (a dict), the contributor's metrics
+    (a dict of parse_metrics), or None (no line, empty, not JSON)."""
+    lines, found = [], None
+    for line in (text or "").splitlines():
+        if line == "REPAIR" or line.startswith("REPAIR "):
+            body = line[len("REPAIR"):].strip()
+            if body.startswith("{"):
+                try:
+                    found = json.loads(body)
+                except ValueError:
+                    found = None
+            elif body and body != "null":
+                found = parse_metrics(body) or None
+            continue
+        lines.append(line)
+    return "\n".join(lines), found
+
+
+def split_lane_probe(text: str) -> tuple[str, dict | None]:
+    """status's probe output less its LANE line, and that line's client fast
+    lane counters (a dict), or None."""
+    lines, found = [], None
+    for line in (text or "").splitlines():
+        if line == "LANE" or line.startswith("LANE "):
+            body = line[len("LANE"):].strip()
+            if body.startswith("{"):
+                try:
+                    found = json.loads(body)
+                except ValueError:
+                    found = None
+            continue
+        lines.append(line)
+    return "\n".join(lines), found
+
+
+def status_repair(role: str, probed, document) -> str:
+    """status's repair segment of a node: its probe's REPAIR content
+    (split_repair_probe) and its /api/node (memory)."""
+    memory = document.get("memory") if isinstance(document, dict) else None
+    if role == "contributor":
+        return contributor_repair_summary(contributor_repair_fields(
+            probed if isinstance(probed, dict) else {}, document))
+    plane = probed if isinstance(probed, dict) else None
+    return repair_summary(repair_fields(plane, memory))
 
 
 def deployed_summary(state: dict) -> list[str]:
@@ -6570,12 +7655,20 @@ def deployed_summary(state: dict) -> list[str]:
 # oom_kill), the host's UDP memory (/proc/net/sockstat) and UDP receive
 # buffer and memory errors (/proc/net/snmp, cumulative). One JSON line a
 # second in NODE_RUNS/memory/, which `collect` brings home under the node's
-# samplers/.
+# samplers/. 4k-repair: also, as served, a mesh node's fast plane repair
+# fields (`fast_plane`: part_repair, decode_pool and parent_lanes whole, and
+# FAST_PLANE_REPAIR_FIELDS, from /api/mesh/local relay_session.fast_plane;
+# its /api/node `memory` carries the repair stores) and the contributor's
+# /metrics samples of CONTRIB_REPAIR_METRICS (`contrib_repair`). A field a
+# binary does not serve is left out.
 MEMORY_SAMPLER_DIR = "/var/lib/needletail-runs/memory"  # under NODE_RUNS
 MEMORY_SAMPLER_PID = "/run/needletail-memory-sampler.pid"
 MEMORY_SAMPLER = r"""
 import json, os, ssl, subprocess, sys, time, urllib.request
 port, out, interval = int(sys.argv[1]), sys.argv[2], float(sys.argv[3])
+role = sys.argv[4] if len(sys.argv) > 4 else "mesh"
+FAST_FIELDS = @FAST_FIELDS@
+CONTRIB_METRICS = @CONTRIB_METRICS@
 context = ssl.create_default_context()
 context.check_hostname = False
 context.verify_mode = ssl.CERT_NONE
@@ -6597,6 +7690,64 @@ def pairs(text, keys, separator=" "):
             try:
                 found[key.strip()] = int(value.split()[0])
             except (IndexError, ValueError):
+                pass
+    return found
+
+
+def get(path, parse=True):
+    with urllib.request.urlopen(f"https://127.0.0.1:{port}{path}",
+                                timeout=max(0.5, interval * 0.4), context=context) as answer:
+        return json.load(answer) if parse else answer.read().decode("utf-8", "replace")
+
+
+def fast_plane_repair():
+    plane = ((get("/api/mesh/local") or {}).get("relay_session") or {}).get("fast_plane")
+    if not isinstance(plane, dict):
+        return None
+    return {key: plane[key] for key in ("part_repair", "decode_pool", "parent_lanes",
+                                        *FAST_FIELDS) if key in plane}
+
+
+def fast_lane():
+    # The client fast lane's counters (would_block, given_back, send_defer
+    # when served) wherever /api/assignment nests them.
+    def find(value):
+        if isinstance(value, dict):
+            if "given_back" in value and "would_block" in value:
+                return value
+            for item in value.values():
+                found = find(item)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = find(item)
+                if found is not None:
+                    return found
+        return None
+    return find(get("/api/assignment"))
+
+
+def net_bytes():
+    # Every interface but lo: [received, sent] bytes, cumulative
+    # (/proc/net/dev); a second's Mbit/s is the difference of two rows.
+    out = {}
+    for line in (read("/proc/net/dev") or "").splitlines()[2:]:
+        name, _, rest = line.partition(":")
+        fields = rest.split()
+        if name.strip() and name.strip() != "lo" and len(fields) >= 9:
+            out[name.strip()] = [int(fields[0]), int(fields[8])]
+    return out
+
+
+def contrib_repair():
+    found = {}
+    for line in get("/metrics", parse=False).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] in CONTRIB_METRICS:
+            try:
+                found[parts[0]] = float(parts[1])
+            except ValueError:
                 pass
     return found
 
@@ -6648,17 +7799,32 @@ with open(out, "a", buffering=1) as sink:
                                         context=context) as answer:
                 document = json.load(answer)
             row["memory"] = document.get("memory")
+            for key in ("pulls", "send_defer", "relay_answers", "cpu_admit", "heavy"):
+                if document.get(key) is not None:
+                    row[key] = document[key]
             row["streams"] = [{key: item.get(key) for key in
                                ("stream_id", "window_parts", "head_part")}
                               for item in document.get("streams") or []]
         except Exception as error:
             row["api_error"] = str(error)[:160]
+        try:
+            if role == "contributor":
+                row["contrib_repair"] = contrib_repair()
+            else:
+                row["fast_plane"] = fast_plane_repair()
+                row["fast_lane"] = fast_lane()
+        except Exception as error:
+            row["repair_error"] = str(error)[:160]
+        row["net"] = net_bytes()
         row["udp_sockstat"] = sockstat_udp()
         row["udp_snmp"] = snmp_udp()
         sink.write(json.dumps(row, separators=(",", ":")) + "\n")
         next_at += interval
         time.sleep(max(0.0, next_at - time.time()))
 """
+MEMORY_SAMPLER = (MEMORY_SAMPLER
+                  .replace("@FAST_FIELDS@", json.dumps(list(FAST_PLANE_REPAIR_FIELDS)))
+                  .replace("@CONTRIB_METRICS@", json.dumps(sorted(CONTRIB_REPAIR_METRICS))))
 
 
 def memory_sampler_start_script(node: dict, stamp: str, interval_s: float) -> str:
@@ -6669,6 +7835,7 @@ def memory_sampler_start_script(node: dict, stamp: str, interval_s: float) -> st
     return (f"{memory_sampler_stop_script()}; mkdir -p {MEMORY_SAMPLER_DIR} && "
             f"cat >{MEMORY_SAMPLER_DIR}/sampler.py <<'EOS'\n{MEMORY_SAMPLER}EOS\n"
             f"(setsid nohup python3 {MEMORY_SAMPLER_DIR}/sampler.py {port} {out} {interval_s} "
+            f"{'contributor' if node['role'] == 'contributor' else 'mesh'} "
             f">{MEMORY_SAMPLER_DIR}/sampler.log 2>&1 </dev/null & echo $! >{MEMORY_SAMPLER_PID}); "
             f"echo {out}")
 
@@ -7313,6 +8480,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan = sub.add_parser("plan")
     plan.add_argument("--set", action="append", default=[])
     plan.add_argument("--remeasure", action="store_true")
+    plan.add_argument("--allow-egress-over", action="store_true",
+                      help="go on when a node's planned heavy egress passes its plan's limit "
+                           "(the nodes are printed); push and restart only print it")
     plan.set_defaults(handler=command_plan)
     push = sub.add_parser("push")
     push.add_argument("--set", action="append", default=[])
@@ -7329,10 +8499,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help="comma-separated: bootstrap, install and start only these (taken "
                            "into service) on their tier's recorded build; every other node is "
                            "left as it runs")
+    push.add_argument("--allow-unwarmed", action="store_true",
+                      help="with node_warm: go on (exit 0) when a host this command manages "
+                           "ends without a complete warm record; the hosts are printed. "
+                           "Without it such a push exits 6 naming them, after doing "
+                           "everything else")
     push.set_defaults(handler=command_push)
     start = sub.add_parser("start", help="take held-out nodes into service, nothing else")
     start.add_argument("--nodes", required=True)
     start.add_argument("--set", action="append", default=[])
+    start.add_argument("--allow-unwarmed", action="store_true",
+                      help="with node_warm: go on (exit 0) when a host this command manages "
+                           "ends without a complete warm record; the hosts are printed. "
+                           "Without it such a start exits 6 naming them, after doing "
+                           "everything else")
     start.set_defaults(handler=command_start)
     stop = sub.add_parser("stop", help="hold nodes out and stop them, nothing else")
     stop.add_argument("--nodes", required=True)
@@ -7348,13 +8528,39 @@ def build_parser() -> argparse.ArgumentParser:
                          help="put .args.prev in force: the rollback of a node an earlier "
                               "command left")
     change_options(restart)
+    restart.add_argument("--allow-unwarmed", action="store_true",
+                         help="with node_warm: go on (the engine's exit) when a node this "
+                              "command activated ends without a complete warm record; the "
+                              "hosts are printed. Without it a restart that was done exits 6 "
+                              "naming them")
     restart.set_defaults(handler=command_restart)
     roll = sub.add_parser("roll", help="one node at a time onto the roots' build (C 3.5)")
     roll.add_argument("tier", choices=("edges", "forwarders", "contributors", "all"))
     roll.add_argument("--nodes", default=None)
     roll.add_argument("--sites", default=None)
     change_options(roll)
+    roll.add_argument("--allow-unwarmed", action="store_true",
+                      help="with node_warm: go on (the engine's exit) when a node this "
+                           "command activated ends without a complete warm record; the "
+                           "hosts are printed. Without it a roll that was done exits 6 "
+                           "naming them")
     roll.set_defaults(handler=command_roll)
+    drain = sub.add_parser("drain", help="one serving edge drained when the others have "
+                                         "room (or after a surge edge with --surge)")
+    drain.add_argument("--nodes", required=True, help="the edge to drain (one)")
+    drain.add_argument("--surge", action="store_true",
+                       help="without room, start the site's standby edge or slot first and "
+                            "wait for it to be ready and warmed; it stays serving")
+    drain.add_argument("--gate-timeout-s", type=float, default=30.0)
+    drain.add_argument("--ready-timeout-s", type=float, default=60.0)
+    drain.add_argument("--marks", default=None, help="append the change's two marks here")
+    drain.add_argument("--node-marks", default=None, help="per-node marks go here")
+    drain.add_argument("--nice", type=int, default=mesh_ops.NICE)
+    drain.add_argument("--poll-s", type=float, default=mesh_ops.POLL_S)
+    drain.add_argument("--allow-unwarmed", action="store_true",
+                       help="with --surge: go on (the engine's exit) when the surge edge ends "
+                            "without a complete warm record")
+    drain.set_defaults(handler=command_drain)
     replace = sub.add_parser("replace", help="one node on a new disk or a new instance, "
                                              "gated (C 3.7)")
     replace.add_argument("--nodes", required=True, help="the node to replace (one)")
@@ -7380,6 +8586,11 @@ def build_parser() -> argparse.ArgumentParser:
     replace.add_argument("--ready-timeout-s", type=float, default=60.0)
     replace.add_argument("--surge", choices=("auto", "never"), default="auto")
     replace.add_argument("--parity-ms", type=float, default=1.0)
+    replace.add_argument("--allow-unwarmed", action="store_true",
+                         help="with node_warm: go on (exit 0) when a host this command manages "
+                              "ends without a complete warm record; the hosts are printed. "
+                              "Without it such a replace exits 6 naming them, after doing "
+                              "everything else")
     replace.set_defaults(handler=command_replace, on_failure="stop", video_gap="refuse")
     for verb, text in (("kill", "a contributor or a first forwarder killed and held down, "
                                 "gated (A 2.10)"),

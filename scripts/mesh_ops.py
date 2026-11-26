@@ -1178,8 +1178,50 @@ def stream_figure(status: Status | None, stream_id: int, field: str):
     return None if row is None else _num(row, field)
 
 
+# P3 (lead's decision, tools6, 25 Nov): the mean slack of the last 10 s within
+# --parity-ms (1 ms), and the 10-second minimum within max(P3_MIN_FLOOR_US, 1%
+# of the leaving parent's mean slack). The minimum is one object's arrival and
+# moves 1 to 4 ms between equal parents (local proof 3: means equal at 998.3
+# ms), so a 1 ms bound on it refused healthy pairs while dry nulls passed.
+P3_MIN_FLOOR_US = 5_000
+P3_MIN_SHARE = 0.01
+
+
+def p3_figures(staying_row: dict, leaving_row: dict, parity_ms: float = 1.0) -> dict:
+    """P3's figures of one pair: each parent's 10 s mean and minimum slack,
+    how much later the staying parent is on each (us; negative: earlier) and
+    what is allowed: the mean `parity_ms`, the minimum max(5 ms, 1% of the
+    leaving parent's mean slack, `parity_ms`)."""
+    mean_allowed = parity_ms * 1000
+    min_allowed = max(P3_MIN_FLOOR_US, P3_MIN_SHARE * abs(leaving_row["slack_mean_us_10s"]),
+                      mean_allowed)
+    mean_later = leaving_row["slack_mean_us_10s"] - staying_row["slack_mean_us_10s"]
+    min_later = leaving_row["slack_min_us_10s"] - staying_row["slack_min_us_10s"]
+    return {"mean_us": [staying_row["slack_mean_us_10s"], leaving_row["slack_mean_us_10s"]],
+            "min_us": [staying_row["slack_min_us_10s"], leaving_row["slack_min_us_10s"]],
+            "mean_later_us": mean_later, "mean_allowed_us": round(mean_allowed),
+            "min_later_us": min_later, "min_allowed_us": round(min_allowed),
+            "mean_ok": mean_later <= mean_allowed, "min_ok": min_later <= min_allowed}
+
+
+def p3_summary(figures: list[dict]) -> str | None:
+    """The gate's line on P3 over every pair it judged: the largest lateness
+    of a staying parent on the mean and on the 10 s minimum, each with what
+    was allowed; None when no pair was judged."""
+    if not figures:
+        return None
+    mean = max(figures, key=lambda item: item["mean_later_us"] - item["mean_allowed_us"])
+    worst = max(figures, key=lambda item: item["min_later_us"] - item["min_allowed_us"])
+    return (f"P3 over {len(figures)} pair(s): mean slack at most {mean['mean_later_us']} us later "
+            f"(allowed {mean['mean_allowed_us']}; {mean['mean_us'][0]} against "
+            f"{mean['mean_us'][1]} us), 10 s minimum at most {worst['min_later_us']} us later "
+            f"(allowed {worst['min_allowed_us']}; {worst['min_us'][0]} against "
+            f"{worst['min_us'][1]} us)")
+
+
 def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_ms: float = 1.0,
-                repair_lane: bool = False, notes: list | None = None) -> list[str]:
+                repair_lane: bool = False, notes: list | None = None,
+                figures: list | None = None) -> list[str]:
     """P1 to P4 of 3.3 on the child's own record: may the parent at
     `leaving` (addresses) go, with the parent at `staying` left to feed
     `stream_id` to this child? [] passes; every problem is named, a missing
@@ -1243,13 +1285,17 @@ def feed_parity(child: Status | None, stream_id: int, leaving, staying, parity_m
     if p["objects_10s"] < behind:
         problems.append(f"P2 complete: the other parent delivered {p['objects_10s']} objects in "
                         f"10 s, the leaving one {x['objects_10s']}")
-    parity_us = parity_ms * 1000
-    if p["slack_mean_us_10s"] < x["slack_mean_us_10s"] - parity_us:
-        problems.append(f"P3 on time: mean slack {p['slack_mean_us_10s']} us against "
-                        f"{x['slack_mean_us_10s']} us of the leaving parent")
-    if p["slack_min_us_10s"] < x["slack_min_us_10s"] - parity_us:
-        problems.append(f"P3 on time: worst slack {p['slack_min_us_10s']} us against "
-                        f"{x['slack_min_us_10s']} us of the leaving parent")
+    p3 = p3_figures(p, x, parity_ms)
+    if figures is not None:
+        figures.append({"stream_id": stream_id, **p3})
+    both = (f"mean slack {p['slack_mean_us_10s']} against {x['slack_mean_us_10s']} us "
+            f"({p3['mean_later_us']} us later, {p3['mean_allowed_us']} allowed), 10 s minimum "
+            f"{p['slack_min_us_10s']} against {x['slack_min_us_10s']} us "
+            f"({p3['min_later_us']} us later, {p3['min_allowed_us']} allowed)")
+    if not p3["mean_ok"]:
+        problems.append(f"P3 on time: the mean is late: {both}")
+    if not p3["min_ok"]:
+        problems.append(f"P3 on time: the worst object is late: {both}")
     if repair_lane and x["multi_symbol_10s"] != 0:
         problems.append(f"P4 whole objects: {x['multi_symbol_10s']} audio objects of more than one "
                         "symbol, which a repair lane does not carry")
@@ -1301,6 +1347,7 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
     notes: list[str] = []
     evidence: dict = {"lease": [], "compiled": [], "video": [], "not_fed": [], "notes": notes}
     pairs: list = []
+    p3: list[dict] = []
     sx = statuses.get(x)
     if sx is None:
         return [f"{x} does not answer /api/node"], evidence, pairs
@@ -1371,9 +1418,11 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
             failed = []
             if not light:
                 said: list = []
+                judged: list = []
                 failed += [f"LG2 {child} <- {other} {stream_id}: {item}" for item in
                            feed_parity(sc, stream_id, x_addresses, lab.addresses(other), parity_ms,
-                                       notes=said)]
+                                       notes=said, figures=judged)]
+                p3 += [{"child": child, "other": other, **item} for item in judged]
                 notes += [f"LG2 {child} <- {other}: {item}" for item in said]
             if sp is None:
                 failed.append(f"LG3: {other} does not answer /api/node")
@@ -1445,10 +1494,13 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
                 repair = lab.records[child].get("secondary") == other
                 staying = lab.addresses(other) if other else set()
                 said = []
+                judged = []
                 failed = feed_parity(sd, stream_id, x_addresses, staying, parity_ms,
-                                     repair_lane=repair, notes=said)
+                                     repair_lane=repair, notes=said, figures=judged)
                 notes += [f"CG2 {child} <- {other}: {item}" for item in said]
-                entry["streams"].append({"stream_id": stream_id, "problems": failed})
+                p3 += [{"child": child, "other": other, **item} for item in judged]
+                entry["streams"].append({"stream_id": stream_id, "problems": failed,
+                                         **({"p3": judged[0]} if judged else {})})
                 problems += [f"CG2 {child} <- {other} {stream_id}: {item}" for item in failed]
         sy = statuses.get(other) if other else None
         if idle:
@@ -1501,6 +1553,12 @@ def forwarder_check(lab: Lab, x: str, statuses: dict, previous: dict | None,
         elif theirs < mine:
             problems.append(f"entry: {sibling} lists {theirs} fresh caches, {x} {mine}")
     evidence["video_children"] = len(evidence["video"])
+    # P3's figures of every pair judged, and the gate's line on them (its
+    # output names the mean and the 10 s minimum, pass or refuse).
+    evidence["p3"] = p3
+    summary = p3_summary(p3)
+    if summary:
+        notes.append(summary)
     return problems, evidence, pairs
 
 
@@ -1567,8 +1625,158 @@ def leg_cost(lab: Lab, site: str, statuses: dict) -> float | None:
     return statistics.median(ratios) if ratios else None
 
 
+def _heavy(status: "Status | None") -> dict | None:
+    """The `heavy` block of an edge's /api/node (av-mesh place240 and
+    integration 6): its heavy CPU budget and what is committed of it
+    (thousandths of one CPU), its heavy egress cap and what is committed of
+    it (bits a second), distress. None when the node does not serve it."""
+    block = status.raw.get("heavy") if status is not None else None
+    if not isinstance(block, dict):
+        return None
+    needed = ("budget_permille", "committed_permille", "egress_max_bps", "committed_bps")
+    if any(_num(block, key) is None for key in needed):
+        return None
+    return block
+
+
+def byte_room(x_status: "Status", others: dict) -> dict | None:
+    """The room of a drain in place240's heavy figures, when X and every
+    other serving edge serve them (`heavy` in /api/node); else None, and
+    load_room counts in load_permille alone.
+
+    X's heavy sessions move: their bytes (`committed_bps`) must fit in the
+    others' heavy egress left (`egress_max_bps - committed_bps`; an edge in
+    distress has none), as the entry places them. The CPU figures are given
+    as evidence: X's committed CPU includes its base and the tees it pays,
+    which do not move, so they are not a test."""
+    x = _heavy(x_status)
+    if x is None:
+        return None
+    rooms = {}
+    for name, status in others.items():
+        heavy = _heavy(status)
+        if heavy is None:
+            return None
+        used = max(heavy["committed_permille"], _num(heavy, "measured_permille") or 0)
+        rooms[name] = {
+            "bps": 0 if heavy.get("distress") else max(
+                0, int(heavy["egress_max_bps"]) - int(heavy["committed_bps"])),
+            "permille": 0 if heavy.get("distress") else max(
+                0, int(heavy["budget_permille"]) - int(used)),
+            "distress": heavy.get("distress"),
+        }
+    need = int(x["committed_bps"])
+    room = sum(item["bps"] for item in rooms.values())
+    return {"need_bps": need, "room_bps": room, "fits": need <= room,
+            "x_committed_permille": int(x["committed_permille"]),
+            "room_permille": sum(item["permille"] for item in rooms.values()),
+            "others": rooms}
+
+
+def load_room(lab: Lab, x: str, statuses: dict,
+              target_permille: int = REBALANCE_TARGET_PERMILLE, share: float = 1.0,
+              extra: int = 0) -> tuple[list[str], dict]:
+    """Room for edge X's load on the other serving edges of its site, from
+    the load each reports (client_udp.load_permille, what the entry places
+    by): the sum over them of (target - load), none below 0, must hold X's
+    load. An X that serves nobody (no UDP subscriber, no LL-HLS session)
+    needs none. Every other edge must answer and be ready; a figure missing
+    is "capacity unknown". `share`: the part of X's load that must move
+    (one-path mode); `extra`: room of an edge counted as serving and empty
+    (permille). (problems, evidence); a problem for want of room starts
+    "capacity: no room"."""
+    site = lab.site(x)
+    others = [name for name in lab.edges(site) if name != x]
+    sx = statuses.get(x)
+    if sx is None:
+        return [f"{x} does not answer /api/node"], {}
+    load = sx.udp("load_permille")
+    legs, sessions = sx.udp("subscribers"), sx.udp("hls_sessions")
+    evidence: dict = {"target_permille": target_permille, "load_permille": load,
+                      "subscribers": legs, "hls_sessions": sessions, "others": {}}
+    if legs == 0 and sessions == 0:
+        evidence["room_permille"] = None
+        return [], evidence
+    problems = []
+    if load is None:
+        problems.append(f"capacity unknown: {x}'s client_udp.load_permille")
+    loads = {}
+    for name in others:
+        status = statuses.get(name)
+        if status is None:
+            problems.append(f"{name} does not answer /api/node")
+            continue
+        if status.ready is not True:
+            problems.append(f"{name} is not ready ({status.state})")
+            continue
+        value = status.udp("load_permille")
+        if value is None:
+            problems.append(f"capacity unknown: {name}'s client_udp.load_permille")
+            continue
+        loads[name] = value
+    evidence["others"] = loads
+    bytes_room = byte_room(sx, {name: statuses.get(name) for name in loads})
+    if bytes_room is not None:
+        evidence["bytes"] = bytes_room
+    if problems:
+        return problems, evidence
+    if bytes_room is not None and round(bytes_room["need_bps"] * share) > bytes_room["room_bps"]:
+        problems.append(
+            f"capacity: no room: {x}'s heavy sessions take "
+            f"{bytes_room['need_bps'] * share / 1e6:.0f} Mbit/s; the other serving edges of "
+            f"{site} have {bytes_room['room_bps'] / 1e6:.0f} Mbit/s of heavy egress left ("
+            + (", ".join(f"{name} {item['bps'] / 1e6:.0f}"
+                         + (f" distress {item['distress']}" if item["distress"] else "")
+                         for name, item in sorted(bytes_room["others"].items(),
+                                                  key=lambda item: natural(item[0])))
+               or "none") + ")")
+        return problems, evidence
+    room = sum(max(0, target_permille - value) for value in loads.values()) + extra
+    need = round(load * share)
+    evidence.update(room_permille=room, need_permille=need)
+    if room < need:
+        listed = ", ".join(f"{name} {value}\u2030" for name, value in sorted(
+            loads.items(), key=lambda item: natural(item[0]))) or "none"
+        problems.append(f"capacity: no room: {x} carries {load}\u2030"
+                        + (f" ({need}\u2030 of it to move)" if need != load else "")
+                        + f" ({legs} UDP legs, "
+                        f"{sessions} LL-HLS sessions); the other serving edges of {site} have "
+                        f"{room}\u2030 of room under the {target_permille}\u2030 target "
+                        f"({listed})")
+    return problems, evidence
+
+
 def capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
                    one_path: bool = False, extra_room: dict | None = None):
+    """legs_capacity_check, and then the room by load (tools6, local proof
+    3's drain with no room): when X and every other serving edge report
+    load_permille, the others' room under the target must hold X's load
+    (in one-path mode only the share of it whose legs need room; an edge
+    counted as serving by `extra_room`, the dry surge, is empty)."""
+    problems, evidence = legs_capacity_check(lab, x, statuses, cost, one_path, extra_room)
+    sx = statuses.get(x)
+    others = [name for name in lab.edges(lab.site(x)) if name != x]
+    if sx is None or sx.udp("load_permille") is None or not all(
+            statuses.get(name) is not None and statuses[name].udp("load_permille") is not None
+            for name in others):
+        return problems, evidence
+    share = 1.0
+    if one_path:
+        needed = (evidence.get("one_path") or {}).get("legs")
+        total = sx.udp("subscribers")
+        if needed is None or not total:
+            return problems, evidence
+        share = needed / total
+    extra = sum(REBALANCE_TARGET_PERMILLE for name in (extra_room or {})
+                if name != x and name not in others)
+    room_problems, room_evidence = load_room(lab, x, statuses, share=share, extra=extra)
+    evidence["load_room"] = room_evidence
+    problems = problems + [item for item in room_problems if item.startswith("capacity: no room")]
+    return problems, evidence
+
+
+def legs_capacity_check(lab: Lab, x: str, statuses: dict, cost: float | None,
+                        one_path: bool = False, extra_room: dict | None = None):
     """One poll of the edge capacity gate (3.5 with B's seam): every other
     serving edge is ready; the others together have room for X's legs; and
     for every other edge E, the edges other than X and E have room for the
@@ -3224,6 +3432,70 @@ def restart_nodes(ops: Ops, names: list[str], *, options: Options | None = None,
 
     def open_journal():
         return open_change(engine, label, list(names), state["previous"], state["finish"])
+
+    return engine.run(label, body, open_journal)
+
+
+def drain(ops: Ops, name: str, *, surge: bool = False, options: Options | None = None,
+          out=None, err=None, clock=time.time, sleep=time.sleep) -> int:
+    """`drain --nodes X` of a serving edge (tools6, local proof 3): first
+    the room on the other serving edges of its site (capacity_check: the
+    legs at their cost, and the reported load under the rebalance target,
+    load_room). Without room it is refused (exit 2) with the numbers, and
+    nothing is touched; with `surge` the site's standby edge or slot is
+    started first, as a roll's surge edge (staged, started, ready with its
+    warm record, resumed, settled), and stays serving. Then the capacity
+    gate on two polls, and drain-node: X stays drained (resume-node takes
+    it back)."""
+    options = dataclasses.replace(options or Options(), surge="auto" if surge else "never")
+    engine = Engine(ops, "drain", options, out, err, clock, sleep)
+    label = f"drain.{name}"
+    engine.resume_command = f"drain --nodes {name}"
+
+    def body(step: str):
+        if step == "prepare":
+            engine.lab = Lab(ops.nodes())
+            record = engine.lab.records.get(name)
+            if not record or record.get("role") != "edge" or not record.get("serving"):
+                raise Refused(f"{name} is not a serving edge of the lab")
+            site = engine.lab.site(name)
+            statuses = engine.poll(sorted(set(engine.lab.edges(site)) | {name}, key=natural))
+            problems, evidence = capacity_check(engine.lab, name, statuses,
+                                                engine.site_cost(site))
+            engine.record(name)["room"] = evidence
+            short = [item for item in problems if item.startswith("capacity: ")]
+            if short and not surge:
+                raise Refused(f"drain of {name} refused: " + "; ".join(short)
+                              + "; --surge starts a standby edge or slot first")
+            if surge:
+                engine.surge_prepare([name], None)
+            engine.print_plan([name], [])
+            return
+        site = engine.lab.site(name)
+        if surge:
+            engine.surge_join(site, name)
+        engine.phase(name, "gate")
+        site_cost = engine.costs.get(site)
+        virtual = engine.virtual_surge.get(site)
+        extra = {virtual: REBALANCE_TARGET_PERMILLE / site_cost} \
+            if virtual and virtual != name and site_cost else None
+        gate = edge_gate(ops, name, lab=engine.lab, cost=site_cost, one_path=False,
+                         timeout_s=options.gate_timeout_s, poll_s=options.poll_s,
+                         clock=engine.clock, sleep=engine.sleep, extra_room=extra)
+        engine.record(name)["gate"] = gate.evidence
+        if not gate.ok:
+            engine.release_hand(name, "not drained")
+            raise Stop(EXIT_STOPPED, f"{name} was not drained: the capacity gate refuses "
+                                     f"({'; '.join(gate.problems)})")
+        engine.phase(name, "drain")
+        engine.control(name, "drain-node")
+        engine.release_hand(name, "drained")
+        engine.say(f"{name} is drained and stays drained (resume-node takes it back)"
+                   + (f"; the surge edge {engine.surge[site]} serves" if site in engine.surge
+                      else ""))
+
+    def open_journal():
+        return open_change(engine, label, [name], None, [])
 
     return engine.run(label, body, open_journal)
 

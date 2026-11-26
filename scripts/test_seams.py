@@ -561,16 +561,17 @@ class Ledger(unittest.TestCase):
         hourly, problems = lab_tool.topology_cost(created, self.TYPES, self.REGIONS)
         every, _ = lab_tool.topology_cost(topology, self.TYPES, self.REGIONS)
         self.assertEqual(problems, [])
-        self.assertEqual((len(created["nodes"]), round(hourly, 3)), (45, 3.51))
-        self.assertEqual((len(topology["nodes"]), round(every, 3)), (53, 3.942))
-        self.assertEqual(scale_topology.ceiling_usd(every), 3.95)
+        # tools6: London's first-hop forwarders on g6-dedicated-8 (egress_plan).
+        self.assertEqual((len(created["nodes"]), round(hourly, 3)), (45, 3.834))
+        self.assertEqual((len(topology["nodes"]), round(every, 3)), (53, 4.266))
+        self.assertEqual(scale_topology.ceiling_usd(every), 4.30)
         one_lab = lab_tool.billed_hours(0, 5 * 3600)
         cost, worst = round(one_lab * hourly, 2), round(one_lab * every, 2)
-        self.assertEqual((cost, worst), (17.55, 19.71))
+        self.assertEqual((cost, worst), (19.17, 21.33))
         three = lab_tool.created_part(lab_tool.without_sites(topology, ["sydney"]))
         hourly3, _ = lab_tool.topology_cost(three, self.TYPES, self.REGIONS)
-        self.assertEqual(round(one_lab * hourly3, 2), 14.04)
-        ceilings = ("NEEDLETAIL_LINODE_MAX_NODES=53", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=3.95")
+        self.assertEqual(round(one_lab * hourly3, 2), 15.66)
+        ceilings = ("NEEDLETAIL_LINODE_MAX_NODES=53", "NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30")
         scale_md = (LOW_LATENCY / "SCALE.md").read_text()
         proving_md = scale_md[scale_md.index("## The proving run"):]
         proving_md = proving_md[:proving_md.index("\n## ", 5)] if "\n## " in proving_md[5:] \
@@ -585,12 +586,12 @@ class Ledger(unittest.TestCase):
                 self.assertIn(figure, text, name)
         for name, text in (("topology", topology["description"]), ("SCALE.md", proving_md),
                            ("phases-proving.json", phases), ("C-operations 7", section7)):
-            self.assertIn("$3.510", text, name)
-            self.assertIn("$3.942", text, name)
+            self.assertIn("$3.834", text, name)
+            self.assertIn("$4.266", text, name)
         for name, text in (("SCALE.md", proving_md), ("phases-proving.json", phases)):
-            for figure in ("$17.55", "$14.04", "--budget-usd 100"):
+            for figure in ("$19.17", "$15.66", "--budget-usd 100"):
                 self.assertIn(figure, text, name)
-        self.assertIn("$19.71", proving_md)
+        self.assertIn("$21.33", proving_md)
         self.assertIn("--budget-usd 100", section7)
         # The party reserves the proving run's worst, priced the same way.
         plan = scale_topology.party_plan()

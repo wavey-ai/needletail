@@ -121,11 +121,19 @@ class Render(unittest.TestCase):
         # secondary's already was.
         self.assertIn("--relay-primary-promoted", args["relay-primary"])
         self.assertEqual(args["relay-secondary"].count("--relay-primary-promoted"), 1)
-        # A distributor's primary parent is a backbone, not the contributor.
-        self.assertNotIn("--relay-primary-promoted", args["lon-dist-a"])
+        # A distributor's primary parent is a backbone, not the contributor:
+        # its source lane is promoted for part repair alone (4k-repair: the
+        # answers, link repair and regenerated sources its primary sends
+        # carry repair intent; review M5), once.
+        self.assertEqual(args["lon-dist-a"].count("--relay-primary-promoted"), 1)
         args = self.render(["relay_repair_both_lanes=false"])
-        self.assertNotIn("--relay-primary-promoted", args["relay-primary"])
+        self.assertEqual(args["relay-primary"].count("--relay-primary-promoted"), 1)
         self.assertEqual(value_of(args["contrib-lon"], "--relay-repair-both-lanes"), "false")
+        # Without part repair, as before it.
+        args = self.render(["relay_part_repair=false"])
+        self.assertNotIn("--relay-primary-promoted", args["lon-dist-a"])
+        args = self.render(["relay_repair_both_lanes=false", "relay_part_repair=false"])
+        self.assertNotIn("--relay-primary-promoted", args["relay-primary"])
 
     def test_class_isolation_false_renders_every_piece_off(self):
         args = self.render(["class_isolation=false"])
@@ -297,7 +305,12 @@ class Render(unittest.TestCase):
                             ("--audio-hot-thread", "false"), ("--relay-repair-both-lanes", "false"),
                             ("--relay-audio-socket-priority", "0")):
             self.assertEqual(value_of(contrib, flag), value, flag)
-        self.assertNotIn("--relay-primary-promoted", args["relay-primary"])
+        # Its source lane promoted for part repair only (the binary's
+        # default; review M5), and not without it.
+        self.assertEqual(args["relay-primary"].count("--relay-primary-promoted"), 1)
+        self.assertNotIn("--relay-primary-promoted", self.render(
+            ["low_latency_baseline=true", "relay_class_split=true", "audio_hot_path=true",
+             "host_qdisc=prio", "relay_part_repair=false"])["relay-primary"])
         self.assertEqual(value_of(args["relay-primary"], "--relay-class-threads"), "false")
         self.assertEqual(value_of(args["lon-edge-1"], "--cache-mesh-class-port-offset"), "0")
         self.assertEqual(value_of(args["lon-edge-1"], "--client-udp-class-sockets"), "false")

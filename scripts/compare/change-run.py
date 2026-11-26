@@ -594,7 +594,8 @@ def crowd_items(args, name: str, directory: pathlib.Path) -> list[dict]:
                             load_sites=",".join(sites),
                             payload=LANES[lanes_of(args.lanes)[0]]["payload"],
                             seconds=args.seconds, name=f"change-{name}", load_args="",
-                            load_assign=not getattr(args, "crowd_edges", False))
+                            load_assign=not getattr(args, "crowd_edges", False),
+                            load_direct=getattr(args, "crowd_edges", False))
     return bench.load_commands(crowd, directory)
 
 

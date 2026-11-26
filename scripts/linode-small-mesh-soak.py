@@ -132,8 +132,8 @@ if rules:
 '''
 
 SNAPSHOT = mesh_run.SNAPSHOT.replace(
-    "relay_session:($mesh.relay_session // null)}'",
-    "relay_session:($mesh.relay_session // null),"
+    "contrib_metrics:$metrics}'",
+    "contrib_metrics:$metrics,"
     "canonical_gap_skip:($mesh.canonical_gap_skip // null),"
     "edge_hole_repair_requests:($mesh.edge_hole_repair_requests // null)}'")
 assert "canonical_gap_skip" in SNAPSHOT

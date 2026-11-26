@@ -34,10 +34,11 @@ export NEEDLETAIL_EDGE_LAB_ID=lp3 NEEDLETAIL_EDGE_LAB_CPUS=2-15
 
 | Variable | Read by | Default | What |
 | --- | --- | --- | --- |
-| `NEEDLETAIL_AV_MESH_ROOT` | edge_lab, latency-bench, archived_run, av_mesh_contract, the deploy tool, the hunt | `<workspace>/av-mesh-features` (edge_lab) | av-mesh checkout: its binaries and, for the contract tests, `src/node_status.rs` |
+| `NEEDLETAIL_AV_MESH_ROOT` | edge_lab, latency-bench, archived_run, av_mesh_contract, the deploy tool, the hunt | `<workspace>/av-mesh-features` (edge_lab); scripts/run-tests.py: the av-mesh worktree beside this one, else `<workspace>/av-mesh-resilient`, else `<workspace>/av-mesh`, the first with a fresh enough build | av-mesh checkout: its binaries and, for the contract tests, `src/node_status.rs` |
 | `NEEDLETAIL_AV_CONTRIB_ROOT` | edge_lab, archived_run, the deploy tool, autoscale, the hunt | `<workspace>/av-contrib-features` (edge_lab), `<workspace>/av-contrib` | av-contrib checkout |
 | `NEEDLETAIL_DAW_NEXUS_ROOT` | the deploy tool, archived_run | `<workspace>/daw-nexus` | daw-nexus checkout (the DAW source) |
 | `NEEDLETAIL_PLAYLISTS_ROOT` | archived_run | the sibling of the av-mesh worktree with its suffix | playlists checkout, recorded in a run's manifest |
+| `NEEDLETAIL_AV_MESH_TOO_OLD` | scripts/run-tests.py sets it; the tests that render against the real av-mesh | unset | why the av-mesh found is too old for the render's flags: those tests skip with it |
 | `NEEDLETAIL_COMPARE_ROOT` | change-run, null-window, source-check, the hunt, gate tests | `<workspace>/needletail-compare` | the referee's checkout: `ntcmp`, `change-window.py`, its media. Read only |
 
 ## Binaries
@@ -55,7 +56,7 @@ export NEEDLETAIL_EDGE_LAB_ID=lp3 NEEDLETAIL_EDGE_LAB_CPUS=2-15
 | `NEEDLETAIL_NODECHECK_BIN` | `$NEEDLETAIL_AV_MESH_ROOT/target/release/needletail-nodecheck` | first-session, source-check |
 | `NEEDLETAIL_H3_CAPACITY_BIN` | `<workspace>/av-mesh/<target>/h3-static-capacity` | the deploy tool's capacity probe |
 | `NEEDLETAIL_DAW_SOURCE_BIN` | the newer of daw-nexus's native and cross `daw-test-source` | the DAW source |
-| `NEEDLETAIL_NTCMP_BIN` | `<workspace>/needletail-compare/target/ntcmp` | the referee's `ntcmp` (edge_lab's referee clips) |
+| `NEEDLETAIL_NTCMP_BIN` | `$NEEDLETAIL_COMPARE_ROOT/target/ntcmp`, else `<workspace>/needletail-compare/target/ntcmp` | the referee's `ntcmp` (edge_lab's referee clips) |
 
 A run takes its binaries from a frozen set (`scripts/freeze-binaries.py`,
 `lab_guard`); `NEEDLETAIL_ALLOW_LIVE=1` lets it take live build outputs.
@@ -109,6 +110,7 @@ logged; see the workspace's AGENTS.md). The tools read it from `LINODE_TOKEN`,
 | `NEEDLETAIL_LINODE_MAX_NODES` | 40 | instances a lab may have |
 | `NEEDLETAIL_LINODE_MAX_HOURLY_USD` | 1.00 | the lab's hourly cost limit |
 | `NEEDLETAIL_LINODE_MAX_WATCHDOG_HOURS` | 6.0 | the longest watchdog |
+| `NEEDLETAIL_LINODE_SEPARATE_ATTEMPTS` | 2 | how many times `up`, `grow` and `replace` make one node anew to separate it from a forwarder of its region or an edge's parent on one physical host (`--separate-attempts`) |
 | `NEEDLETAIL_LINODE_LEDGER` | `needletail-linode-ledger.jsonl` beside the token file | what each finished lab cost |
 | `NEEDLETAIL_LINODE_SSH_KEY` | `~/.ssh/id_ed25519` | the key the lab's hosts take |
 

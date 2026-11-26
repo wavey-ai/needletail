@@ -80,7 +80,13 @@ Safety, before anything else:
   "slow-host") and created again, once a slot (`slow_replaced`); a
   forwarder slot, a standby edge or a slot replaced before is only
   reported (`slow_host` events). The deploy's push is told `--slow-host
-  report`: this controller decides for its slots.
+  report`: this controller decides for its slots. A start or push that
+  exits 6 (the deploy's UNWARMED: done, but no complete warm record) leaves
+  its node not ready (`unwarmed` event): its check runs again by a push of
+  it, at most WARM_RERUNS (2) times, then the join fails and the node is
+  parked. A recovery's push after a rebuild that exits 6 is the same: not
+  a failed step; the push runs again up to WARM_RERUNS times, then the
+  recovery fails ("warm"). --allow-unwarmed is never passed.
 * However it stops (SIGINT or SIGTERM, its --duration, its change, a
   failure), it hands the worker nothing more, waits for the worker's job in
   hand (up to 120 s, then ends that job's tool and names it), and resumes
@@ -206,6 +212,20 @@ WIND_DOWN_WAIT_S = 120.0
 # Exit status of the change verbs (as mesh_ops): done, refused before
 # anything changed, the change failed, interrupted.
 EXIT_DONE, EXIT_REFUSED, EXIT_FAILED, EXIT_INTERRUPTED = 0, 2, 3, 130
+# The deploy's exit status (its EXIT_UNWARMED) when a start or push did
+# everything else but the host ends without a complete warm record.
+DEPLOY_EXIT_UNWARMED = 6
+# How many times a join runs an unwarmed node's warm check again (the
+# deploy's push --nodes: its activation stops the service, runs the check
+# and starts the service again, as push's held-out warm pass runs it on a
+# standby) before the join fails and the node is parked. --allow-unwarmed
+# is never passed: an unwarmed node is not ready.
+WARM_RERUNS = 2
+
+
+class Unwarmed(RuntimeError):
+    """A deploy start or push that did everything else, but left its node
+    without a complete warm record (exit DEPLOY_EXIT_UNWARMED)."""
 
 
 def load_module(name: str, file: str):
@@ -665,7 +685,8 @@ def node_view(name: str, document: dict | None, by_address: dict | None = None) 
                 "operator_drained": None, "udp_subscribers": None, "hls_sessions": None,
                 "hls_moved_active": None, "hls_requests_in_flight": None, "refusals": None,
                 "rebalance_moves": None, "lease_children": None, "cache_children": None,
-                "cpu": None, "heard": {}, "fed": {}, "slow_host": None, "warm_verdict": None}
+                "cpu": None, "heard": {}, "fed": {}, "slow_host": None, "warm_verdict": None,
+                "nothing_to_shed": None}
     by_address = by_address or {}
     udp = status.client_udp or {}
     cpu = gauge(document, "process.cpu_permille")
@@ -698,7 +719,18 @@ def node_view(name: str, document: dict | None, by_address: dict | None = None) 
             "lease_children": gauge(document, "children.lease.children"),
             "cache_children": gauge(document, "cache_mesh.children"),
             "cpu": None if cpu is None else cpu / 1000,
+            "nothing_to_shed": nothing_to_shed(document),
             "heard": heard, "fed": fed, **warm_view(document)}
+
+
+def nothing_to_shed(document: dict) -> bool | None:
+    """av-mesh rm/cpuadmit: the edge is over its CPU full point with no
+    two-leg listener to shed (/api/node cpu_admit.nothing_to_shed), so only
+    a new edge relieves it. None when the node says nothing (no cpu_admit,
+    or a build before 156fa2a)."""
+    admit = document.get("cpu_admit") if isinstance(document, dict) else None
+    value = admit.get("nothing_to_shed") if isinstance(admit, dict) else None
+    return value if isinstance(value, bool) else None
 
 
 def warm_view(document: dict) -> dict:
@@ -933,6 +965,8 @@ class LinodeBackend(Backend):
         command = [sys.executable, str(HERE / "linode-small-mesh-deploy.py"), verb,
                    "--nodes", names, *extra]
         result = self.run_child(command, 1800)
+        if result.returncode == DEPLOY_EXIT_UNWARMED and verb in ("start", "push"):
+            raise Unwarmed(f"deploy {verb} --nodes {names}: unwarmed: {result.stderr[-1500:]}")
         if result.returncode != 0:
             raise RuntimeError(f"deploy {verb} --nodes {names}: {result.stderr[-1500:]}")
 
@@ -1475,6 +1509,9 @@ class Worker:
             result = {"ok": True, "value": value}
         except Refused as error:
             result = {"ok": False, "refused": True, "error": str(error)[-1500:], "value": value}
+        except Unwarmed as error:
+            result = {"ok": False, "refused": False, "unwarmed": True,
+                      "error": str(error)[-1500:], "value": value}
         except Exception as error:  # noqa: BLE001 - the result says what failed
             result = {"ok": False, "refused": False, "error": str(error)[-1500:],
                       "value": value}
@@ -1585,9 +1622,14 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
            and (movable is None or movable >= hottest - REBALANCE_TARGET_PERMILLE))
     region["hot_streak"] = region.get("hot_streak", 0) + 1 if hot else 0
     region["refusal_streak"] = region.get("refusal_streak", 0) + 1 if refused else 0
+    # rm/cpuadmit: an edge over its CPU full point with nothing to shed
+    # (every listener on one leg): one sample is enough to add an edge, the
+    # region's mean load aside; never a scale-down while one says so.
+    shedless = sorted((node["name"] for node in serving
+                       if obs[node["name"]].get("nothing_to_shed") is True), key=natural)
     projected = total / (count - 1) if count > 1 else None
     low = (count > config.min_edges and projected is not None
-           and projected <= config.down_permille and not refused)
+           and projected <= config.down_permille and not refused and not shedless)
     if low:
         region.setdefault("low_since_unix", now)
     else:
@@ -1599,6 +1641,7 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
               "high_streak": region["high_streak"], "hot_streak": region["hot_streak"],
               "max_permille": hottest, "hot_movable_permille": movable,
               "refusal_streak": region["refusal_streak"],
+              "nothing_to_shed": shedless,
               "low_for_s": round(now - region["low_since_unix"], 1) if low else 0.0}
     if blocked:
         inputs["blocked"] = sorted(blocked, key=natural)
@@ -1612,10 +1655,12 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
     since_action = now - region.get("last_action_unix", -math.inf)
     trigger_up = (region["high_streak"] >= config.up_samples
                   or region["hot_streak"] >= config.up_samples
-                  or region["refusal_streak"] >= config.refusal_samples)
+                  or region["refusal_streak"] >= config.refusal_samples
+                  or bool(shedless))
     if trigger_up:
         desired = math.ceil(total / config.target_permille) if count else config.min_edges
-        if (refused or region["hot_streak"] >= config.up_samples) and desired <= count:
+        if (refused or shedless or region["hot_streak"] >= config.up_samples) \
+                and desired <= count:
             desired = count + 1
         inputs["desired"] = desired
         want = min(config.max_per_action, desired - (count + len(joining)))
@@ -1628,7 +1673,8 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
                                   "serves (the slots included) or is held back")
         if since_action < config.cooldown_s:
             return result("hold", f"cooldown: {since_action:.0f} s since the last action")
-        if now - region.get("last_remove_unix", -math.inf) < config.no_flap_s and not refused:
+        if now - region.get("last_remove_unix", -math.inf) < config.no_flap_s and not refused \
+                and not shedless:
             return result("hold", "a node left this region less than "
                                   f"{config.no_flap_s:.0f} s ago")
         chosen = candidates[:want]
@@ -1637,7 +1683,9 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
                else f"an edge at {hottest} >= {config.up_max_permille} with the mean "
                     f"{mean:.0f} >= {config.target_permille} for {region['hot_streak']} samples"
                if region["hot_streak"] >= config.up_samples
-               else f"refusals in {region['refusal_streak']} samples")
+               else f"refusals in {region['refusal_streak']} samples"
+               if region["refusal_streak"] >= config.refusal_samples
+               else f"{', '.join(shedless)} over CPU full with nothing to shed")
         return result("join", f"{why}: {count} serving, target {desired}", chosen)
     if joining:
         return result("wait", "edges of this region are joining")
@@ -1654,10 +1702,33 @@ def decide_region(site: str, nodes: list[dict], obs: dict[str, dict], actions: d
                                   "listeners are unknown is never drained to be removed")
         victim = victims[0][-1]
         inputs["victim_listeners"] = victims[0][0]
+        short = no_room(victim, loads)
+        if short:
+            inputs["room"] = short
+            return result("hold", f"no room to drain {victim}: it carries "
+                                  f"{short['load_permille']} permille, the other serving edges "
+                                  f"have {short['room_permille']} under "
+                                  f"{REBALANCE_TARGET_PERMILLE}")
         return result("drain", f"{projected:.0f} <= {config.down_permille} with one edge "
                                f"fewer for {now - region['low_since_unix']:.0f} s", [(victim,
                                                                                     "drain")])
     return result("hold", "within the band" if count else "no serving edge advertised")
+
+
+def no_room(victim: str, loads: dict[str, int],
+            target: int = REBALANCE_TARGET_PERMILLE) -> dict | None:
+    """tools6: whether the other serving edges have no room for the edge
+    `victim`'s load (their target - load, none below 0, under its own, as
+    the deploy's drain counts it: mesh_ops.load_room); the figures when they
+    have none, else None. A scale-down never drains into no room."""
+    load = loads.get(victim)
+    if load is None:
+        return None
+    others = {name: value for name, value in loads.items() if name != victim}
+    room = sum(max(0, target - value) for value in others.values())
+    if room >= load:
+        return None
+    return {"victim": victim, "load_permille": load, "room_permille": room, "others": others}
 
 
 def forwarder_slot_candidate(forwarders: list[dict], obs: dict, actions: dict,
@@ -2164,6 +2235,9 @@ class Controller:
                 self.queue(action, {"pushing": "push", "starting": "start"}[action["phase"]],
                            [name])
                 return
+            if result.get("unwarmed"):
+                self.rerun_warm(name, action, now, node, result["error"])
+                return
             if not result["ok"]:
                 raise Refused(result["error"]) if result.get("refused") \
                     else RuntimeError(result["error"])
@@ -2185,6 +2259,29 @@ class Controller:
                                         "deadline")
                 self.done(name, "failed")
                 self.park(name, node, proof="never-served")
+
+    def rerun_warm(self, name: str, action: dict, now: float, node: dict, detail: str) -> None:
+        """A start or push that left its node without a complete warm record
+        (the deploy's exit 6): the node is not ready. Its warm check is run
+        again by a push of it (its activation stops the service first and
+        starts it after the check), up to WARM_RERUNS times, the join's
+        deadline moved by the pass's allowance; then the join fails and the
+        node is parked (stopped; a slot held in the warm pool)."""
+        reruns = action.get("warm_reruns", 0)
+        if reruns >= WARM_RERUNS:
+            self.fail(name, "warm", f"no complete warm record after {reruns} rerun(s) of its "
+                                    f"check: not taken into service; {detail}")
+            self.done(name, "failed")
+            self.park(name, node, proof="never-served")
+            return
+        action["warm_reruns"] = reruns + 1
+        action["deadline_unix"] = max(action["deadline_unix"],
+                                      now + self.config.join_timeout_s + self.warm_s(node))
+        self.events("unwarmed", node=name, region=action["site"], rerun=reruns + 1,
+                    why="its warm record is not complete: not ready; its check runs again "
+                        "(push --nodes)", detail=detail[-500:])
+        self.queue(action, "push", [name])
+        action["phase"] = "pushing"
 
     def advance_drain(self, name: str, action: dict, now: float, view: dict, node: dict) -> None:
         if action["phase"] == "drain":
@@ -2671,6 +2768,9 @@ class Controller:
                 action.update(phase="settle",
                               settle_deadline_unix=now + self.settle_s(action, node))
             return
+        if phase == "pushing" and result.get("unwarmed"):
+            self.rerun_recovery_warm(name, action, now, node, result["error"])
+            return
         if not result["ok"]:
             self.recover_failed(name, action, node, f"{action['step']}: {result['error']}")
             return
@@ -2679,6 +2779,30 @@ class Controller:
             action["phase"] = "pushing"
             return
         action.update(phase="settle", settle_deadline_unix=now + self.settle_s(action, node))
+
+    def rerun_recovery_warm(self, name: str, action: dict, now: float, node: dict,
+                            detail: str) -> None:
+        """The recovery's push (after a rebuild) did everything but left the
+        node without a complete warm record (the deploy's exit 6): the node
+        is not ready, the step is not failed. Its check runs again by a push
+        of it, up to WARM_RERUNS times, the recovery's deadline moved by the
+        pass's allowance (as a join's, rerun_warm); then the recovery fails
+        ("warm")."""
+        reruns = action.get("warm_reruns", 0)
+        if reruns >= WARM_RERUNS:
+            self.recover_failed(name, action, node,
+                                f"warm: no complete warm record after {reruns} rerun(s) of its "
+                                f"check; {detail}")
+            return
+        action["warm_reruns"] = reruns + 1
+        action["deadline_unix"] = max(action["deadline_unix"],
+                                      now + RECOVER_SETTLE_S + self.warm_s(node))
+        self.events("unwarmed", node=name, region=action["site"], rerun=reruns + 1,
+                    step=action.get("step"),
+                    why="recovery: its warm record is not complete: not ready; its check runs "
+                        "again (push --nodes)", detail=detail[-500:])
+        self.queue(action, "push", [name])
+        action["phase"] = "pushing"
 
     def settle_s(self, action: dict, node: dict) -> float:
         """How long a node has to answer `ready` after a recovery step:
@@ -2923,6 +3047,15 @@ def command_scale(controller: Controller, direction: str, site: str, tier: str,
                               f"{controller.config.min_edges}")
             victims = edge_victims(serving, obs, controller.config, now)
             found = [victims[0][-1]] if victims else []
+            if found:
+                short = no_room(found[0], {
+                    node["name"]: int((obs.get(node["name"]) or {}).get("load_permille") or 0)
+                    for node in serving})
+                if short:
+                    raise Refused(f"no room to drain {found[0]}: it carries "
+                                  f"{short['load_permille']} permille, the other serving edges "
+                                  f"of {site} have {short['room_permille']} under "
+                                  f"{REBALANCE_TARGET_PERMILLE} ({json.dumps(short['others'])})")
         else:
             found = [node["name"] for node in serving if node.get("slot")
                      and (obs.get(node["name"]) or {}).get("lease_children") is not None
