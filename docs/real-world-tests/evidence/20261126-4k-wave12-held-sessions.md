@@ -1,0 +1,5 @@
+| session | lon | new | tok | syd |
+|---|---|---|---|---|
+| 1 | not whole (nano UDP 91.776%/2637ms; view LL-HLS None%/Nonems; view UDP 97.001%/795ms) | not whole (nano UDP 98.367%/138ms; view LL-HLS 96.034%/772ms; view UDP 98.459%/116ms) | not whole (nano UDP 98.499%/118ms; view LL-HLS 90.014%/1820ms; view UDP 98.453%/112ms) | not whole (nano UDP 98.452%/116ms; view LL-HLS None%/Nonems; view UDP 96.632%/183ms) |
+| 2 | not whole (nano UDP None%/Nonems; view LL-HLS None%/Nonems; view UDP None%/Nonems) | not whole (nano UDP None%/Nonems; view LL-HLS 100.0%/0ms; view UDP None%/Nonems) | not whole (nano UDP None%/Nonems; view LL-HLS 100.0%/0ms; view UDP None%/Nonems) | not whole (nano UDP None%/Nonems; view LL-HLS None%/Nonems; view UDP None%/Nonems) |
+| 3 | not whole (nano UDP None%/Nonems; view LL-HLS None%/Nonems; view UDP None%/Nonems) | not whole (nano UDP None%/Nonems; view LL-HLS 92.96%/5198ms; view UDP None%/Nonems) | not whole (nano UDP None%/Nonems; view LL-HLS 88.055%/5192ms; view UDP None%/Nonems) | not whole (nano UDP None%/Nonems; view LL-HLS None%/Nonems; view UDP None%/Nonems) |

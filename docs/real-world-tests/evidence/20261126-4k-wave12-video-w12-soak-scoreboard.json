@@ -1,0 +1,784 @@
+{
+ "analysis": "target/compare/evidence-4k12/video-analysis.json",
+ "session": "video-w12-soak",
+ "rungs": [
+  "2160p240"
+ ],
+ "ceilings": [
+  {
+   "region": "London",
+   "needletail": {
+    "highest": 240,
+    "unbroken": 240,
+    "by_rung": {
+     "2160p240": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {},
+    "ran": false
+   },
+   "needletail_llhls": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {
+     "2160p240": false
+    },
+    "ran": true
+   },
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "needletail": {
+    "highest": 240,
+    "unbroken": 240,
+    "by_rung": {
+     "2160p240": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {},
+    "ran": false
+   },
+   "needletail_llhls": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {
+     "2160p240": false
+    },
+    "ran": true
+   },
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "needletail": {
+    "highest": 240,
+    "unbroken": 240,
+    "by_rung": {
+     "2160p240": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {},
+    "ran": false
+   },
+   "needletail_llhls": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {
+     "2160p240": false
+    },
+    "ran": true
+   },
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "needletail": {
+    "highest": 240,
+    "unbroken": 240,
+    "by_rung": {
+     "2160p240": true
+    },
+    "ran": true
+   },
+   "livekit": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {},
+    "ran": false
+   },
+   "needletail_llhls": {
+    "highest": 0,
+    "unbroken": 0,
+    "by_rung": {
+     "2160p240": false
+    },
+    "ran": true
+   },
+   "result": "not measured"
+  }
+ ],
+ "rows": [
+  {
+   "region": "London",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "lon-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 42.4,
+   "livekit": null,
+   "needletail_host": "lon-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "London",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "lon-nano",
+   "livekit_host": null,
+   "needletail_stopped": null,
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 99.7,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "new-nano": 21.3,
+    "new-view": 269.8
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 82.8,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "new-nano": 21.3,
+    "new-view": 269.8
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "New York",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 395,
+   "livekit": null,
+   "needletail_host": "new-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "new-nano": 21.3,
+    "new-view": 269.8
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 100.0,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "tok-view": 323.6
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 223.3,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "tok-view": 323.6
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Tokyo",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 0,
+   "livekit": null,
+   "needletail_host": "tok-view",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "tok-view": 323.6
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p240",
+   "metric": "on_time",
+   "label": "Frames on time (%)",
+   "needletail": 99.978,
+   "livekit": null,
+   "needletail_host": "syd-nano",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "syd-nano": 84.7
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p240",
+   "metric": "p50",
+   "label": "Delay after due, median (ms)",
+   "needletail": 212.5,
+   "livekit": null,
+   "needletail_host": "syd-nano",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "syd-nano": 84.7
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  },
+  {
+   "region": "Sydney",
+   "rung": "2160p240",
+   "metric": "stall",
+   "label": "Longest stall (ms)",
+   "needletail": 92,
+   "livekit": null,
+   "needletail_host": "syd-nano",
+   "livekit_host": null,
+   "needletail_stopped": {
+    "syd-nano": 84.7
+   },
+   "livekit_stopped": null,
+   "result": "not measured"
+  }
+ ],
+ "rss_mb": {
+  "nt.throughput.2160p240": {
+   "lon-dist-a": [
+    1267,
+    1423
+   ],
+   "lon-dist-b": [
+    1245,
+    1417
+   ],
+   "lon-edge-1": [
+    468,
+    905
+   ],
+   "lon-edge-2": [
+    439,
+    864
+   ],
+   "new-dist-a": [
+    1117,
+    1163
+   ],
+   "new-dist-b": [
+    1229,
+    1263
+   ],
+   "new-edge-1": [
+    433,
+    884
+   ],
+   "new-edge-2": [
+    431,
+    905
+   ],
+   "syd-dist-a": [
+    1106,
+    1152
+   ],
+   "syd-dist-b": [
+    932,
+    965
+   ],
+   "syd-edge-1": [
+    458,
+    921
+   ],
+   "syd-edge-2": [
+    445,
+    949
+   ],
+   "tok-dist-a": [
+    958,
+    998
+   ],
+   "tok-dist-b": [
+    1158,
+    1185
+   ],
+   "tok-edge-1": [
+    432,
+    999
+   ],
+   "tok-edge-2": [
+    476,
+    940
+   ]
+  }
+ },
+ "node_report": {
+  "nt.throughput.2160p240": {
+   "contrib-lon": {
+    "window_parts": null,
+    "video_cache_mb": null,
+    "shed_mb": null,
+    "memory_state": null
+   },
+   "lon-dist-a": {
+    "window_parts": 650,
+    "video_cache_mb": 809,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "lon-dist-b": {
+    "window_parts": 651,
+    "video_cache_mb": 809,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "lon-edge-1": {
+    "window_parts": 312,
+    "video_cache_mb": 402,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "lon-edge-2": {
+    "window_parts": 312,
+    "video_cache_mb": 405,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "new-dist-a": {
+    "window_parts": 323,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "new-dist-b": {
+    "window_parts": 323,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "new-edge-1": {
+    "window_parts": 308,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "new-edge-2": {
+    "window_parts": 312,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "syd-dist-a": {
+    "window_parts": 322,
+    "video_cache_mb": 406,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "syd-dist-b": {
+    "window_parts": 322,
+    "video_cache_mb": 406,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "syd-edge-1": {
+    "window_parts": 292,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "syd-edge-2": {
+    "window_parts": 298,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "tok-dist-a": {
+    "window_parts": 323,
+    "video_cache_mb": 406,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "tok-dist-b": {
+    "window_parts": 323,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "tok-edge-1": {
+    "window_parts": 312,
+    "video_cache_mb": 407,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   },
+   "tok-edge-2": {
+    "window_parts": 312,
+    "video_cache_mb": 403,
+    "shed_mb": 0,
+    "memory_state": [
+     "ok"
+    ]
+   }
+  }
+ },
+ "edges": {
+  "nt.throughput.2160p240": {
+   "contrib-lon": {
+    "busiest_core_percent": 32.5,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "lk-redis": {
+    "busiest_core_percent": 3.7
+   },
+   "lon-dist-a": {
+    "busiest_core_percent": 50.7,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "lon-dist-b": {
+    "busiest_core_percent": 51.0,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "lon-edge-1": {
+    "busiest_core_percent": 72.2,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "cpu_admit.shed_rounds": 1,
+     "cpu_admit.shed_hints": 1,
+     "cpu_admit.nothing_to_shed_episodes": 1,
+     "cpu_admit.udp_shed_moves": 1
+    }
+   },
+   "lon-edge-2": {
+    "busiest_core_percent": 46.3,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "lon-lk": {
+    "busiest_core_percent": 3.8
+   },
+   "lon-nano": {
+    "busiest_core_percent": 53.3
+   },
+   "lon-src": {
+    "busiest_core_percent": 19.7
+   },
+   "lon-view": {
+    "busiest_core_percent": 11.0
+   },
+   "new-dist-a": {
+    "busiest_core_percent": 68.4,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "new-dist-b": {
+    "busiest_core_percent": 60.2,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "new-edge-1": {
+    "busiest_core_percent": 54.8,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "pulls.shed_answered": 700
+    }
+   },
+   "new-edge-2": {
+    "busiest_core_percent": 74.2,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "cpu_admit.shed_rounds": 1,
+     "cpu_admit.shed_hints": 1,
+     "cpu_admit.nothing_to_shed_episodes": 6,
+     "cpu_admit.udp_shed_moves": 1
+    }
+   },
+   "new-lk": {
+    "busiest_core_percent": 3.8
+   },
+   "new-nano": {
+    "busiest_core_percent": 58.9
+   },
+   "new-view": {
+    "busiest_core_percent": 29.6
+   },
+   "syd-dist-a": {
+    "busiest_core_percent": 56.4,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "syd-dist-b": {
+    "busiest_core_percent": 61.0,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "syd-edge-1": {
+    "busiest_core_percent": 82.7,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "pulls.not_requested_shed": 2,
+     "pulls.shed_answered": 6111190,
+     "cpu_admit.nothing_to_shed_episodes": 19
+    }
+   },
+   "syd-edge-2": {
+    "busiest_core_percent": 79.1,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "cpu_admit.shed_rounds": 1,
+     "cpu_admit.shed_hints": 1,
+     "cpu_admit.nothing_to_shed_episodes": 2,
+     "cpu_admit.udp_shed_moves": 1
+    }
+   },
+   "syd-lk": {
+    "busiest_core_percent": 2.7
+   },
+   "syd-nano": {
+    "busiest_core_percent": 50.6
+   },
+   "syd-view": {
+    "busiest_core_percent": 41.8
+   },
+   "tok-dist-a": {
+    "busiest_core_percent": 64.5,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "tok-dist-b": {
+    "busiest_core_percent": 56.8,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {}
+   },
+   "tok-edge-1": {
+    "busiest_core_percent": 81.9,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "ingest.tee_dropped": 130753,
+     "pulls.not_requested_shed": 244,
+     "pulls.shed_recorded": 97,
+     "pulls.shed_answered": 8255049,
+     "cpu_admit.shed_rounds": 1,
+     "cpu_admit.shed_hints": 1,
+     "cpu_admit.nothing_to_shed_episodes": 14,
+     "cpu_admit.udp_shed_moves": 1
+    }
+   },
+   "tok-edge-2": {
+    "busiest_core_percent": 79.2,
+    "socket_drops": 0,
+    "cache_mesh_socket_drops": 0,
+    "qdisc_drops": 0,
+    "counters": {
+     "pulls.not_requested_shed": 6,
+     "pulls.shed_answered": 225048,
+     "cpu_admit.nothing_to_shed_episodes": 4
+    }
+   },
+   "tok-lk": {
+    "busiest_core_percent": 4.3
+   },
+   "tok-nano": {
+    "busiest_core_percent": 36.7
+   },
+   "tok-view": {
+    "busiest_core_percent": 25.1
+   }
+  }
+ },
+ "listener_edges": {
+  "nt.throughput.2160p240": {
+   "lon": {
+    "lon-view": {
+     "udp": [
+      "lon-edge-1",
+      "lon-edge-2",
+      "syd-edge-1",
+      "syd-edge-2",
+      "tok-edge-1",
+      "tok-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    },
+    "lon-nano": {
+     "udp": [
+      "lon-edge-1",
+      "lon-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    }
+   },
+   "new": {
+    "new-view": {
+     "udp": [
+      "new-edge-1",
+      "new-edge-2"
+     ],
+     "llhls": [
+      "new-edge-1"
+     ],
+     "shared": true
+    },
+    "new-nano": {
+     "udp": [
+      "new-edge-1",
+      "new-edge-2",
+      "tok-edge-1",
+      "tok-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    }
+   },
+   "tok": {
+    "tok-view": {
+     "udp": [
+      "syd-edge-2",
+      "tok-edge-1",
+      "tok-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    },
+    "tok-nano": {
+     "udp": [
+      "tok-edge-1",
+      "tok-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    }
+   },
+   "syd": {
+    "syd-view": {
+     "udp": [
+      "syd-edge-1",
+      "syd-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    },
+    "syd-nano": {
+     "udp": [
+      "syd-edge-1",
+      "syd-edge-2",
+      "tok-edge-1",
+      "tok-edge-2"
+     ],
+     "llhls": [],
+     "shared": false
+    }
+   }
+  }
+ }
+}

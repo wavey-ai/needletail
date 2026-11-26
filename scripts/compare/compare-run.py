@@ -939,7 +939,11 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
                 if not udp_only and not lean:
                     view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
                 view.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-view", "uc"))
-                nano.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-nano", "uc"))
+                # --stagger-seconds (lead, 26 Nov): the -nano UDP viewer joins this long after
+                # the -view one, a fresh session, for the rest of the step.
+                stagger = getattr(session, "stagger_seconds", 0) or 0
+                late = lane.probe(site, rung, seconds - stagger, "probe.uc", 1, True, tag + "-nano", "uc")
+                nano.append(f"sleep {stagger}; {late}" if stagger else late)
             if rung in CHROME_UP_TO and not udp_only and not lean:
                 view.append(lane.player(site, seconds, "player", tag))
             if lane.name == "nt" and not udp_only and not lean:
@@ -958,7 +962,8 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
         audio_meta = ({"config": "pcm", "lanes": ["nt-pcm", "nt-uc"], "nt_uc_base": "nt-pcm",
                        "nt_pcm_epoch_samples": 48, "nt_frame_ms": {"nt-pcm": 1.0}}
                       if lane.name == "nt" and session.audio == "pcm" else None) or {}
-        audio_meta.update({"lean": lean, "uc_receive_buffer_bytes": getattr(session, "uc_receive_buffer", 0) or None})
+        audio_meta.update({"lean": lean, "uc_receive_buffer_bytes": getattr(session, "uc_receive_buffer", 0) or None,
+                           "stagger_seconds": getattr(session, "stagger_seconds", 0) or 0})
         restarts: list = []
         if held > 1 and lane.name == "nt":
             # Held sessions (lead, 26 Nov, cell 4): the probes run through `held` sessions
@@ -1066,6 +1071,9 @@ def main() -> None:
     parser.add_argument("--held-sessions", type=int, default=0,
                         help="each Needletail throughput step holds its probes through this many sessions of "
                              "the step's length; the video sender alone restarts between them")
+    parser.add_argument("--stagger-seconds", type=int, default=0,
+                        help="Needletail's -nano UDP 4K viewer starts this long after the -view one (a fresh "
+                             "session; its probe runs for the rest of the step)")
     parser.add_argument("--pace", type=float, default=2.5,
                         help="a WebRTC sender spreads a frame at this multiple of the clip bit rate")
     args = parser.parse_args()
@@ -1077,6 +1085,7 @@ def main() -> None:
     session.udp_only = args.udp_only
     session.lean, session.uc_receive_buffer = args.lean, args.uc_receive_buffer_bytes
     session.idle_between_seconds, session.held_sessions = args.idle_between_seconds, args.held_sessions
+    session.stagger_seconds = args.stagger_seconds
     # Name and addresses of every node, so that a listener's edge (the LL-HLS
     # probe's playlist_url_host) can be named afterwards.
     (session.dir / "lab-nodes.json").write_text(json.dumps(

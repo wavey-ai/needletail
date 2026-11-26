@@ -21,7 +21,149 @@ same lab. The audio comparison is a separate
 record, [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 A first pass on shared Nanodes is superseded and is not reported.
 
-## Latest: the memory-bound resilient-mesh build (25 November, night)
+## Latest: integration 6 against LiveKit (26 November, night)
+
+The lead's integration 6 (av-mesh 74d0c04, av-contrib 8a6a8bc, playlists 68f235b,
+needletail 6e40240, merged here as d77e583) on lab cmpd9: the lead's
+topology-4k-lk.json, 31 dedicated instances in London, New York, Tokyo and Sydney.
+London's two first-hop forwarders were g6-dedicated-4 this time, and `up` separated
+co-hosted nodes: new-dist-a, new-dist-b and new-edge-1 came up on one physical host
+and two of them were made again elsewhere. Every host was warmed by the deploy.
+The deploy reported three slow hosts (first-touch page stalls during warming:
+new-view, tok-dist-b, tok-lk) and kept them, as its rule is report-only. Settings
+were the deploy defaults (part repair off, send pacing 0, send-defer 200 ms, CPU
+admission on) plus PCM in the contributor's formats. The harness is
+compare-cloudflare 28d7698.
+
+Viewers (lead's terms, `--lean`): in each region two UDP 4K viewers (one on the
+-view host, one on the -nano host) and one LL-HLS 4K reader (the HTTP/2 probe on
+-view). There was no HTTP/3 probe, needletail-reader or Chrome. The measurement
+hosts had net.core.rmem_max at 64 MiB and the UDP clients a 64 MiB receive buffer.
+The 1 ms PCM lane ran beside every 4K cell (LL-HLS from -nano, UDP from -view).
+Rungs are named by the clips: 80, 160, 240 and 320 run at 80, 164, 247 and 333
+Mbit/s measured, and the text uses the measured rates. Scoring is the record's
+rule: the better of a region's two UDP viewers has at least 99.5% of frames on
+time and no stall over 500 ms.
+
+The lead stated its claims before the run:
+- (a) whole in all four regions at 247 for 300 s and at every ladder rung up to 247;
+- (b) whole in each of three back-to-back sessions, no viewer refused, each
+  region's two viewers on two edges;
+- (c) audio beside 4K loses nothing and is no worse than cmpd8;
+- (d) no OOM, and forwarder memory flat over 300 s.
+
+**Results against the claims:**
+
+| Cell | London | New York | Tokyo | Sydney |
+| --- | --- | --- | --- | --- |
+| Ladder 80 / 164 / 247 / 333, 120 s each, 60 s idle between | 80, 164 whole; **247 not whole** (99.44%, 0 missing, 15 late, 122 ms); 333 whole | whole to 247; 333 not (90.8%) | whole to 247; 333 not (97.6%) | whole to 247; 333 not (66.8%) |
+| 247 for 300 s | whole on lon-nano only; lon-view joined 211 s late (see below) | whole (new-view 99.70%, 395 ms) | whole | whole (syd-nano joined 98 s late; syd-view 92.8%) |
+| 247 for 300 s, -nano viewer 20 s after -view (lead's extra cell) | whole (both 100%) | not whole (98.1%, 804 ms) | not whole (97.5%, 3.6 s) | not whole (96.9%, 3.6 s) |
+| Three 100 s sessions at 247, viewers held, video sender restarted | not whole in any session | not whole in any session | not whole in any session | not whole in any session |
+| A/B: part_repair_group on, 247 for 120 s | whole | not whole (93.7%) | not whole (94.4%) | not whole (93.2%) |
+
+- **Claim (a) does not hold as stated.** The ladder was whole to 247 in New York,
+  Tokyo and Sydney and missed London's 247 rung by 0.06 points. Both London viewers
+  were late together (15 and 16 frames, nothing missing). lon-nano had a 502 ms
+  host stop in that step and lon-view none, so the host does not explain it. The
+  300 s cell was whole by the rule in all four regions. London's pass rests on
+  lon-nano alone and Sydney's on syd-nano's last 193 s, because the other viewer
+  in each was refused for minutes (next point).
+- **Claim (b) does not hold.**
+  - Placement: at every ladder rung each region's two viewers took their parts
+    from the same edge.
+  - Refusals: in the 300 s cell and at 333, edges refused second viewers as
+    `edge-busy` (the edge's heavy cap by measured CPU). Clients then moved to
+    another region's edge: lon-view after 211 s and 76 busy re-asks to
+    syd-edge-1; syd-nano after 98 s to tok-edge-2; tok-view to syd-edge-2;
+    new-nano to tok-edge-1. The lead's reading of its samples: an edge at 247
+    with one viewer measures 1,250–1,620 against a budget of 1,500, so a second
+    viewer is refused; and the entry kept re-sending lon-view to the edge it
+    remembered while lon-edge-2 had room.
+  - Staggering the second viewer by 20 s ended the refusals but not the packing:
+    London's two viewers still shared lon-edge-1.
+  - Held sessions: after the first restart of the video sender, every UDP 4K
+    viewer stopped receiving. All 8 clients report two session restarts, a
+    longest silence of 59–72 s and 80–97 s of silence at the end of 207 s of
+    sessions 2 and 3. The LL-HLS readers in New York and Tokyo were served in
+    session 2 (100%) and session 3 (88–93%), so the mesh carried the new
+    sessions and the UDP fast lane did not deliver them to held viewers. The
+    clients' arrivals files hold session 1 only, so sessions 2 and 3 cannot be
+    scored frame by frame; the client counters are the evidence. Session 1 was
+    97.0–98.5% for the better viewer everywhere.
+- **Claim (c): nothing missing holds; "no worse than cmpd8" does not, for p99.**
+  The 1 ms PCM UDP listener lost no part in any region in any 4K cell, the held
+  one included (its sender was not restarted). Beside 4K its p99 was London
+  5.2–9.3 ms, New York 37.5–42.7, Tokyo 112.6–118.2 and Sydney 129.7–133.8,
+  excluding 333. cmpd8's clean steps had p99 floors of 2.1, 34.3, 109.5 and
+  130.6, so London, New York and Tokyo are about 3 ms higher; Sydney is unchanged.
+  The viewer sets differ (cmpd8 had more 4K readers). The PCM LL-HLS listener
+  missed at most 0.0036% beside 4K.
+- **Claim (d): no OOM holds; "flat" does not.** No node journal has an OOM kill,
+  and the memory guard read `ok` in all 33,560 samples of the 4K cells. Over the
+  300 s cell the forwarders' RSS rose and only partly fell back: lon-dist-a went
+  from 1,074 MB to a peak of 1,494 and ended at 1,197; lon-dist-b from 1,055 to
+  1,486, ending at 1,200; new-dist-a from 1,075 to 1,220, ending at 1,146.
+- **The long-haul stalls come from London's first hop.** In the stagger cell
+  both London forwarders hit fast-plane WouldBlock in bursts at 02:33:39–41,
+  02:34:55–58, 02:36:07, 02:37:44–45 and 02:37:59–02:38:02. Their send-defer pools
+  expired about 86,500 and 90,400 entries in those bursts. The other three regions'
+  late frames fall in the same seconds, and London's viewers had none. The
+  forwarders' egress (eth0 plus VLAN, from raw transmit bytes) ran at a median
+  1,222 Mbit/s with p95 1,350 and peaks of about 1,700. That is above the plan of
+  1,186 and the 1,200 limit for a g6-dedicated-4. Some blocked seconds fell to
+  650–740 Mbit/s, which looks like a stalled send path rather than a full one.
+  The lead is analysing the ladder's 247 rung and the A/B cell, which show the
+  same pattern of London whole and the others late.
+- **LL-HLS 4K.** The one reader per region was refused with HTTP 429 at the
+  playlist on edges already carrying a UDP viewer: London, Tokyo and Sydney in
+  the 300 s cell, London at 247 in the ladder. Where admitted it was 88–100% on
+  time. It is shown, not scored.
+- **The datagram loss figure is unexplained.** Every UDP client reported
+  datagram_loss of about 0.30 while receiving every part. The lead suspects
+  repair symbols the edge does not forward, counted as loss, and has not
+  confirmed it.
+
+**LiveKit, the control, on the same lab** (60 s rungs, sweep ended after two
+rungs with no region whole): whole at 40 everywhere, at 80 in Tokyo and Sydney
+only (London and New York 88.9% and 89.6%), and nowhere at 120 (37–52%).
+
+| Highest rung whole | London | New York | Tokyo | Sydney |
+| --- | ---: | ---: | ---: | ---: |
+| Needletail, UDP (ladder) | 333 (unbroken to 164) | 247 | 247 | 247 |
+| LiveKit, SFU in each region | 40 | 40 | 80 | 80 |
+
+LiveKit's rungs were 60 s and Needletail's 120 s. On the cmpd7 lab LiveKit was
+whole at 80, 80, 40 and 120.
+
+**Audio alone (cell 1)**, the standard passes on this lab, Needletail UDP against
+self-hosted LiveKit: 58 wins, 1 tie, 5 losses of 64 rows.
+- 1 ms Opus Custom and 1 ms PCM: every row won except New York's PCM median
+  (43.7 against 39.0 ms).
+- New York's PCM pass was disturbed for both systems: Needletail's p99 5,885 ms,
+  LiveKit's 12,181 ms. new-view was one of the deploy's slow hosts.
+- 2.5 ms Opus against LiveKit's 2.5 ms Opus: four losses (Tokyo median, and p99
+  in London, Tokyo and Sydney, by 0.6–4.4 ms) and a tie (Sydney median).
+
+**The crowd (cell 6, a measurement, not a claim):** 1 ms Opus Custom listeners
+through London's entry points, 20 more every 10 s up to 600, from lon-view. The
+edges' first refusals came at 81 s. Each edge had admitted about 150 legs, both
+CPUs were 77–79% busy, and the measured cost per datagram was 5.6–6.4 µs (the
+default is 3 µs). That is about 95 legs per core at 78% busy. The load host
+saturated first, at 51 s (120 listeners, 3 of its 4 cores, receive lag), and
+the first missing part followed at 65 s. So whether refusal or loss comes first
+cannot be read from this run. This cell ran with part_repair_group on, as it
+followed the A/B cell without a restore.
+
+**Not run:** the A/B cell with send pacing 4 (dropped by the lead for time) and
+cell 7, the PCM crowd beside 4K (no spare load host in this topology).
+
+Lab: up 01:16 UTC, down 02:51, $4.21 billed (64 instance-hours, two whole hours).
+Raw data, verified complete, is in ~/needletail-data/cmpd9. Evidence is in
+`evidence/20261126-4k-wave12-*`: the scoreboards, held-sessions, video-audio,
+audio scoreboards, host stops and slim analysis.
+
+## The memory-bound resilient-mesh build (25 November, night)
 
 **With memory bounded, Needletail's UDP client carried 240 Mbit/s of 4K
 whole to all four regions in a 120 s step, run straight after the rest of
