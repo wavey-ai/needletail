@@ -404,8 +404,9 @@ class Session:
         return out
 
     def settings(self) -> dict:
-        """The deployed settings (the artifacts' settings.json), {} when absent."""
-        path = common.ARTIFACT_DIR / "settings.json"
+        """The deployed settings: settings.json in the artifacts beside the lab state
+        in use (NEEDLETAIL_LINODE_LAB_STATE may name another tools root's), {} when absent."""
+        path = common.state_path().resolve().parent / "small-mesh-artifacts" / "settings.json"
         return json.loads(path.read_text()) if path.is_file() else {}
 
     def node(self, name: str) -> dict:
@@ -504,7 +505,7 @@ class Lane:
                 # compare-audio.py), so its probes in a 4K step are scored as in the
                 # audio sessions. flac: the lane of waves 5 to 9.
                 if s.audio == "pcm":
-                    formats = str(json.loads((common.ARTIFACT_DIR / "settings.json").read_text())
+                    formats = str(s.settings()
                                   .get("daw_hls_formats") or "")
                     if "pcm" not in formats.split(","):
                         raise RuntimeError(f"--audio pcm needs pcm in daw_hls_formats (deployed: {formats!r}); "
