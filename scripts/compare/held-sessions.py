@@ -14,8 +14,9 @@ A restarted sender's catch-up burst (lead, 27 Nov: ffmpeg holds the first
 ~0.66 s of a publish while it probes its input, then sends it 1-3 ms a frame,
 so lateness against the frames' due times climbs and drains over the first
 second) falls inside each session's first 5 s, which the scoring leaves out as
-it does a step's. compare-run.py --sender-start realtime removes the burst at
-the source.
+it does a step's. From 27 Nov compare-run.py starts the sender with ffmpeg's
+probe off (--sender-start realtime, the default), which removes the burst at
+the source; cmpd9 and earlier ran with the probe (--sender-start probe).
 
     held-sessions.py SESSION_DIR [--step nt.throughput.2160p240] [--json out.json]
 """

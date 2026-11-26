@@ -104,10 +104,10 @@ class Sender(unittest.TestCase):
         s = session(PLAN)
         s.nodes["contrib-lon"] = {"vlan_ipv4": "192.168.1.2"}
         lane = run.Lane(s, "nt")
-        self.assertNotIn("-probesize", lane.nt_video("2160p240"))
-        s.sender_start = "realtime"
         self.assertIn("-probesize 32 -analyzeduration 0 -fflags nobuffer -f flv -i pipe:0",
                       lane.nt_video("2160p240"))
+        s.sender_start = "probe"
+        self.assertNotIn("-probesize", lane.nt_video("2160p240"))
 
 
 class Crowd(unittest.TestCase):

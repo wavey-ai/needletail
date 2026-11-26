@@ -585,12 +585,12 @@ class Lane:
         """Needletail's video sender: the clip as FLV, published over RTMP to the contributor."""
         contributor = self.session.node("contrib-lon")
         target = f"rtmp://{contributor['vlan_ipv4']}:19350/live/needletail-lab"
-        # --sender-start realtime: ffmpeg's input probe off. By default ffmpeg holds
+        # --sender-start realtime (the default from 27 Nov): ffmpeg's input probe off. With it ffmpeg holds
         # the first ~660 ms of the pipe while it probes, then sends those frames
         # 1-3 ms apart (measured here, 26 Nov: 17 frames, lag 663 ms falling to 0);
         # with the probe off every frame leaves at its due time.
         probe = ("-probesize 32 -analyzeduration 0 -fflags nobuffer "
-                 if getattr(self.session, "sender_start", "probe") == "realtime" else "")
+                 if getattr(self.session, "sender_start", "realtime") == "realtime" else "")
         return (f"ntcmp flv --clip {REMOTE}/clips/{rung} --no-audio | ffmpeg -hide_banner -loglevel warning "
                 f"-nostdin {probe}-f flv -i pipe:0 -c copy -f flv {target}")
 
@@ -812,7 +812,7 @@ def step(session: Session, lane: Lane, phase: str, detail: str, rung: str, scrip
         meta["topology_file"] = getattr(session, "topology_file", None)
         deployed = session.settings() if hasattr(session, "settings") else {}
         meta["deployed_settings"] = {key: deployed.get(key) for key in RECORDED_SETTINGS}
-        meta["sender_start"] = getattr(session, "sender_start", "probe")
+        meta["sender_start"] = getattr(session, "sender_start", "realtime")
     (session.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     session.steps.append({"step": name, "seconds": result["seconds"],
                           "host_errors": len(result["host_errors"])})
@@ -1209,10 +1209,10 @@ def main() -> None:
     parser.add_argument("--nano-client", choices=("uc", "hls"), default="uc",
                         help="lean steps: the -nano host's 4K client, the UDP viewer (default) or the LL-HLS "
                              "reader in its place (the reader's own cell; one UDP viewer a region)")
-    parser.add_argument("--sender-start", choices=("probe", "realtime"), default="probe",
-                        help="Needletail's video sender: ffmpeg with its default input probe (up to cmpd9: the "
-                             "first ~0.66 s of a publish sent in a burst) or with the probe off (every frame at "
-                             "its due time)")
+    parser.add_argument("--sender-start", choices=("probe", "realtime"), default="realtime",
+                        help="Needletail's video sender: ffmpeg with its input probe off, every frame at its due "
+                             "time (the default from 27 Nov; the lead's local lab showed av-contrib takes it), or "
+                             "with its default probe (up to cmpd9: the first ~0.66 s of a publish in a burst)")
     parser.add_argument("--expect-settings", default="",
                         help="KEY=VALUE,... that the deployed settings.json must hold (e.g. "
                              "video_smooth_fraction=0.8,send_pacing=0); the session refuses to start otherwise")
