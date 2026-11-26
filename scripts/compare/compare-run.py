@@ -58,6 +58,10 @@ SERVER_NAME = common.TLS_SERVER_NAME
 # COMPARE_SITES drops a site whose lab nodes could not be created (22 Nov: no
 # dedicated capacity in Sydney).
 SITES = os.environ.get("COMPARE_SITES", "lon,new,tok,syd").split(",")
+# Deployed settings recorded with every Needletail step (and checkable with
+# --expect-settings): what shapes the first hop and the edges' sending.
+RECORDED_SETTINGS = ("video_smooth_fraction", "video_smooth_tick_us", "send_pacing", "late_primary",
+                     "part_repair_group", "heavy_egress_max_mbps", "daw_hls_formats")
 BASE_RUNG = "2160p5"     # the rung that every system carries whole
 RAMP = ["1080p6", "2160p16", "2160p25", "2160p40", "2160p80"]
 # Raw throughput: 4K at a rising bit rate until the system no longer carries it.
@@ -238,6 +242,13 @@ VIEWER_SAMPLER = (
     "(setsid nohup sh /var/tmp/compare-viewer.sh >/var/tmp/compare-viewer.log 2>&1 </dev/null &)")
 
 
+def entry_node(session, site: str, slot: int = 0) -> str:
+    """The node a region's host asks first: slot 0 for the -view host, 1 for the
+    -nano host (Session.viewer_entries); <site>-dist-a for a session without them."""
+    entries = getattr(session, "entries", None) or {}
+    return entries[site][slot] if site in entries else site + "-dist-a"
+
+
 def stats_url(item: dict) -> str:
     port = 19443 if item["role"] == "contributor" else 19444
     return f"https://{item['public_ipv4']}:{port}/api/stats"
@@ -349,6 +360,53 @@ class Session:
         self.rungs: list[str] | None = None      # the rungs of a throughput sweep, when not all
         self.pace = 2.5                          # pacing factor of the WebRTC senders
         self.audio = "pcm"                       # the nt lane's 1 ms audio: pcm, flac or off
+        self.topology_file, self.run_plan = self.load_run_plan()
+        self.entries = self.viewer_entries()
+
+    def load_run_plan(self) -> tuple[str | None, dict]:
+        """The lab topology's `run_plan` (topo4k, 26 Nov), from the file the lab
+        state names, or COMPARE_TOPOLOGY. {} when the topology has none."""
+        named = os.environ.get("COMPARE_TOPOLOGY") or self.state.get("topology_file")
+        if not named:
+            return None, {}
+        path = pathlib.Path(named)
+        if not path.is_absolute():
+            for base in (common.state_path().resolve().parent.parent.parent, ROOT):
+                if (base / path).is_file():
+                    path = base / path
+                    break
+        if not path.is_file():
+            raise SystemExit(f"the lab's topology {named} is not readable here; set COMPARE_TOPOLOGY")
+        return str(path), json.loads(path.read_text()).get("run_plan") or {}
+
+    def viewer_entries(self) -> dict[str, list[str]]:
+        """Each site's entry points: [the -view host's, the -nano host's]. From the
+        run plan's udp_viewer_entries when the topology has one (the lead, 26 Nov:
+        cmpd9 sent both 4K viewers of a region to <site>-dist-a, and both landed on
+        one edge); otherwise <site>-dist-a for both, as up to cmpd9. A relay
+        (long-haul, no viewers) or a node of another site is refused."""
+        planned = self.run_plan.get("udp_viewer_entries") or {}
+        out = {}
+        for site in SITES:
+            lists = [names for names in planned.values()
+                     if isinstance(names, list) and names and all(n.startswith(site + "-") for n in names)]
+            if not planned:
+                out[site] = [site + "-dist-a", site + "-dist-a"]
+                continue
+            if len(lists) != 1 or len(lists[0]) != 2:
+                raise SystemExit(f"run_plan.udp_viewer_entries has no pair of entries for {site}: {planned}")
+            for name in lists[0]:
+                node = self.nodes.get(name)
+                if (node is None or node.get("role") not in ("distributor", "edge")
+                        or node.get("long_haul") or "-lh-" in name):
+                    raise SystemExit(f"run_plan entry {name} of {site} is not a viewer entry of this lab")
+            out[site] = list(lists[0])
+        return out
+
+    def settings(self) -> dict:
+        """The deployed settings (the artifacts' settings.json), {} when absent."""
+        path = common.ARTIFACT_DIR / "settings.json"
+        return json.loads(path.read_text()) if path.is_file() else {}
 
     def node(self, name: str) -> dict:
         return self.nodes[name]
@@ -526,8 +584,14 @@ class Lane:
         """Needletail's video sender: the clip as FLV, published over RTMP to the contributor."""
         contributor = self.session.node("contrib-lon")
         target = f"rtmp://{contributor['vlan_ipv4']}:19350/live/needletail-lab"
+        # --sender-start realtime: ffmpeg's input probe off. By default ffmpeg holds
+        # the first ~660 ms of the pipe while it probes, then sends those frames
+        # 1-3 ms apart (measured here, 26 Nov: 17 frames, lag 663 ms falling to 0);
+        # with the probe off every frame leaves at its due time.
+        probe = ("-probesize 32 -analyzeduration 0 -fflags nobuffer "
+                 if getattr(self.session, "sender_start", "probe") == "realtime" else "")
         return (f"ntcmp flv --clip {REMOTE}/clips/{rung} --no-audio | ffmpeg -hide_banner -loglevel warning "
-                f"-nostdin -f flv -i pipe:0 -c copy -f flv {target}")
+                f"-nostdin {probe}-f flv -i pipe:0 -c copy -f flv {target}")
 
     def restart_video(self, rung: str) -> dict:
         """A new publish of the video on a running mesh and contributor (lead, 26 Nov:
@@ -575,21 +639,26 @@ class Lane:
         return status
 
     # -- viewers --
-    def entry(self, site: str) -> str:
-        """Needletail entry point of a region: its first distributor."""
-        return f"https://{self.session.ip(site + '-dist-a')}:19444"
+    def entry(self, site: str, slot: int = 0) -> str:
+        """Needletail entry point of a region for a host: slot 0 the -view host's,
+        slot 1 the -nano host's (Session.viewer_entries)."""
+        return f"https://{self.session.ip(entry_node(self.session, site, slot))}:19444"
 
     def probe(self, site: str, rung: str, seconds: int, out: str, count: int, frames: bool,
-              tag: str, variant: str = "") -> str:
+              tag: str, variant: str = "", slot: int | None = None) -> str:
         # variant "h3" is Needletail read with eight part requests in flight over HTTP/3.
+        # slot: which of the region's entries (None: from the tag, -nano 1, else 0).
         s = self.session
+        if slot is None:
+            slot = 1 if tag.endswith("-nano") else 0
+        entry = self.entry(site, slot)
         index = f"{REMOTE}/index/{rung}.index.json"
         common_args = (f"--duration {seconds} --report {out}.json --label {tag} --count {count} "
                        + (f"--spread-ms {min(5000, 200 * count)} " if count > 1 else "")
                        + (f"--frames {out}.csv " if frames else ""))
         if self.name == "nt" and variant == "uc":
             # RaptorQ FEC over UDP from the assigned edge, measured by the same index.
-            return (f"date +%s.%N >{out}.launch; /usr/local/bin/needletail-udp-client --entry {self.entry(site)} "
+            return (f"date +%s.%N >{out}.launch; /usr/local/bin/needletail-udp-client --entry {entry} "
                     f"--stream 1 --tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
                     + (f"--receive-buffer-bytes {s.uc_receive_buffer} " if getattr(s, "uc_receive_buffer", 0) else "")
                     + f"--session {tag}uc --arrivals {out}.arrivals.csv --write-parts {out}.parts.bin "
@@ -601,7 +670,7 @@ class Lane:
         if self.name == "nt":
             reader = "--window 8 --http3 " if variant == "h3" else ""
             return (f"ntcmp hls --lane nt{'-h3' if variant == 'h3' else ''} --mode chase {reader}"
-                    f"--url '{self.entry(site)}/live/1/master.m3u8"
+                    f"--url '{entry}/live/1/master.m3u8"
                     f"?sid={tag}{variant}-{{i}}' --ca {CA} --server-name {SERVER_NAME} --index {index} "
                     + common_args)
         if self.name == "cf":
@@ -627,7 +696,7 @@ class Lane:
     def audio_hls(self, site: str, seconds: int, tag: str) -> str:
         """compare-audio.py's nt-pcm listener: LL-HLS of stream 4001, a 5 ms window."""
         return (f"ntcmp hls --lane nt-pcm --mode chase --window 5 "
-                f"--url '{self.entry(site)}/live/4001/master.m3u8?sid={tag}-nt-pcm-{{i}}' --ca {CA} "
+                f"--url '{self.entry(site, 1 if tag.endswith('-nano') else 0)}/live/4001/master.m3u8?sid={tag}-nt-pcm-{{i}}' --ca {CA} "
                 f"--server-name {SERVER_NAME} --audio-index {REMOTE}/index/nt-pcm-48s.index.json "
                 f"--duration {seconds} --skip-seconds 5 --report nt-pcm.probe.json --label {tag} "
                 "--count 1 --frames nt-pcm.probe.csv")
@@ -635,7 +704,7 @@ class Lane:
     def audio_uc(self, site: str, seconds: int, tag: str) -> str:
         """compare-audio.py's nt-uc listener of the PCM lane: RaptorQ FEC over UDP."""
         index = f"{REMOTE}/index/nt-pcm-48s.index.json"
-        return (f"date +%s.%N >nt-uc.launch; /usr/local/bin/needletail-udp-client --entry {self.entry(site)} "
+        return (f"date +%s.%N >nt-uc.launch; /usr/local/bin/needletail-udp-client --entry {self.entry(site, 1 if tag.endswith('-nano') else 0)} "
                 f"--stream 4001 --tls-ca {CA} --server-name {SERVER_NAME} --duration-seconds {seconds} "
                 f"--session {tag}-uc-0 --arrivals nt-uc.arrivals.csv --write-parts nt-uc.parts.bin "
                 f">nt-uc.uc.json 2>nt-uc.uc.err; ntcmp udp-ingest --arrivals nt-uc.arrivals.csv "
@@ -735,6 +804,14 @@ def step(session: Session, lane: Lane, phase: str, detail: str, rung: str, scrip
         meta["audio"] = session.audio
         meta["audio_start_unix"] = getattr(lane, "audio_start", None)
         meta["udp_only"] = bool(getattr(session, "udp_only", False))
+        # What the step ran against: the entries each host asked, the deployed
+        # settings that shape the first hop, and how the video sender started.
+        meta["viewer_entries"] = {site: [entry_node(session, site, 0), entry_node(session, site, 1)]
+                                  for site in SITES}
+        meta["topology_file"] = getattr(session, "topology_file", None)
+        deployed = session.settings() if hasattr(session, "settings") else {}
+        meta["deployed_settings"] = {key: deployed.get(key) for key in RECORDED_SETTINGS}
+        meta["sender_start"] = getattr(session, "sender_start", "probe")
     (session.dir / name / "meta.json").write_text(json.dumps(meta, indent=1) + "\n")
     session.steps.append({"step": name, "seconds": result["seconds"],
                           "host_errors": len(result["host_errors"])})
@@ -786,7 +863,7 @@ def ttff(session: Session, lane: Lane, rung: str) -> None:
         tag = f"{session.name}-{lane.name}-{site}"
         joins = []
         for i in range(8):
-            joins.append(lane.probe(site, rung, hold, f"join{i}", 1, False, f"{tag}-j{i}", "")
+            joins.append(lane.probe(site, rung, hold, f"join{i}", 1, False, f"{tag}-j{i}", "", slot=1)
                          + " >/dev/null 2>>errors.log")
         scripts[f"{site}-nano"] = "\n".join(joins)
         plays = []
@@ -900,6 +977,18 @@ def restarter(lane: Lane, rung: str, every: int, count: int, record: list) -> th
     return thread
 
 
+def lean_reader_host(session: Session, lean: bool, site: str) -> str | None:
+    """Where a step's LL-HLS 4K reader runs: "view" (beside the -view UDP viewer),
+    "nano" (--nano-client hls: in place of the -nano UDP viewer) or None (a lean
+    step's site outside --hls-reader-sites). Outside lean steps, "view"."""
+    if not lean:
+        return "view"
+    if getattr(session, "nano_client", "uc") == "hls":
+        return "nano"
+    chosen = getattr(session, "hls_reader_sites", None)
+    return "view" if chosen is None or site in chosen else None
+
+
 def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str] | None = None) -> None:
     failed = 0
     rungs = rungs or THROUGHPUT
@@ -933,17 +1022,27 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
             # --lean (lead, 26 Nov, integration 6): two UDP 4K viewers a region (-view and
             # -nano) and exactly one LL-HLS 4K reader (the HTTP/2 chase probe on -view);
             # no HTTP/3 probe, needletail-reader or Chrome.
-            nano = [] if udp_only or lean else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")]
-            view = [] if udp_only else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")]
+            # In a lean step the LL-HLS 4K reader runs on -view only in --hls-reader-sites
+            # (lead, 27 Nov: a London edge is planned for one 247 viewer, so London's two
+            # UDP viewers leave no edge for it), and --nano-client hls puts the LL-HLS
+            # reader on -nano in place of its UDP viewer (the reader's own cell).
+            reader_host = lean_reader_host(session, lean, site)
+            nano_hls = reader_host == "nano"
+            hls_here = reader_host == "view"
+            nano = ([] if udp_only or (lean and not nano_hls)
+                    else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-nano")])
+            view = ([] if udp_only or not hls_here or nano_hls
+                    else [lane.probe(site, rung, seconds, "probe", 1, True, tag + "-view")])
             if lane.name == "nt":
                 if not udp_only and not lean:
                     view.append(lane.probe(site, rung, seconds, "probe.h3", 1, True, tag + "-view", "h3"))
                 view.append(lane.probe(site, rung, seconds, "probe.uc", 1, True, tag + "-view", "uc"))
-                # --stagger-seconds (lead, 26 Nov): the -nano UDP viewer joins this long after
-                # the -view one, a fresh session, for the rest of the step.
-                stagger = getattr(session, "stagger_seconds", 0) or 0
-                late = lane.probe(site, rung, seconds - stagger, "probe.uc", 1, True, tag + "-nano", "uc")
-                nano.append(f"sleep {stagger}; {late}" if stagger else late)
+                if not nano_hls:
+                    # --stagger-seconds (lead, 26 Nov): the -nano UDP viewer joins this long
+                    # after the -view one, a fresh session, for the rest of the step.
+                    stagger = getattr(session, "stagger_seconds", 0) or 0
+                    late = lane.probe(site, rung, seconds - stagger, "probe.uc", 1, True, tag + "-nano", "uc")
+                    nano.append(f"sleep {stagger}; {late}" if stagger else late)
             if rung in CHROME_UP_TO and not udp_only and not lean:
                 view.append(lane.player(site, seconds, "player", tag))
             if lane.name == "nt" and not udp_only and not lean:
@@ -963,7 +1062,9 @@ def throughput(session: Session, lane: Lane, base_seconds: int, rungs: list[str]
                        "nt_pcm_epoch_samples": 48, "nt_frame_ms": {"nt-pcm": 1.0}}
                       if lane.name == "nt" and session.audio == "pcm" else None) or {}
         audio_meta.update({"lean": lean, "uc_receive_buffer_bytes": getattr(session, "uc_receive_buffer", 0) or None,
-                           "stagger_seconds": getattr(session, "stagger_seconds", 0) or 0})
+                           "stagger_seconds": getattr(session, "stagger_seconds", 0) or 0,
+                           "lean_hls_reader": ({site: lean_reader_host(session, lean, site) for site in SITES}
+                                               if lean else None)})
         restarts: list = []
         if held > 1 and lane.name == "nt":
             # Held sessions (lead, 26 Nov, cell 4): the probes run through `held` sessions
@@ -1037,6 +1138,33 @@ def run_lane(session: Session, name: str, phases: list[str], seconds: int) -> No
                              "pkill -x ntcmp; pkill -x ntcmp-lk; true", check=False)
 
 
+def settings_mismatch(deployed: dict, expected: str) -> list[str]:
+    """What differs between --expect-settings (KEY=VALUE,...) and the deployed
+    settings. Numbers compare as numbers, true/false as booleans; an unset key
+    differs from any value."""
+    def norm(value):
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("true", "on", "yes"):
+            return True
+        if text in ("false", "no"):
+            return False
+        try:
+            return float(text)
+        except ValueError:
+            return text
+    wrong = []
+    for item in (part for part in expected.split(",") if part.strip()):
+        key, _, value = item.partition("=")
+        key = key.strip()
+        if key not in deployed or deployed[key] is None:
+            wrong.append(f"{key} is not set (expected {value})")
+        elif norm(deployed[key]) != norm(value):
+            wrong.append(f"{key} is {deployed[key]!r}, expected {value}")
+    return wrong
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--session", required=True, help="name of the session, e.g. a1")
@@ -1074,6 +1202,19 @@ def main() -> None:
     parser.add_argument("--stagger-seconds", type=int, default=0,
                         help="Needletail's -nano UDP 4K viewer starts this long after the -view one (a fresh "
                              "session; its probe runs for the rest of the step)")
+    parser.add_argument("--hls-reader-sites", default=None,
+                        help="lean steps: the sites whose -view host also runs the LL-HLS 4K reader (default "
+                             "all; e.g. new,tok,syd when a London edge is planned for one 4K viewer)")
+    parser.add_argument("--nano-client", choices=("uc", "hls"), default="uc",
+                        help="lean steps: the -nano host's 4K client, the UDP viewer (default) or the LL-HLS "
+                             "reader in its place (the reader's own cell; one UDP viewer a region)")
+    parser.add_argument("--sender-start", choices=("probe", "realtime"), default="probe",
+                        help="Needletail's video sender: ffmpeg with its default input probe (up to cmpd9: the "
+                             "first ~0.66 s of a publish sent in a burst) or with the probe off (every frame at "
+                             "its due time)")
+    parser.add_argument("--expect-settings", default="",
+                        help="KEY=VALUE,... that the deployed settings.json must hold (e.g. "
+                             "video_smooth_fraction=0.8,send_pacing=0); the session refuses to start otherwise")
     parser.add_argument("--pace", type=float, default=2.5,
                         help="a WebRTC sender spreads a frame at this multiple of the clip bit rate")
     args = parser.parse_args()
@@ -1086,6 +1227,13 @@ def main() -> None:
     session.lean, session.uc_receive_buffer = args.lean, args.uc_receive_buffer_bytes
     session.idle_between_seconds, session.held_sessions = args.idle_between_seconds, args.held_sessions
     session.stagger_seconds = args.stagger_seconds
+    session.hls_reader_sites = args.hls_reader_sites.split(",") if args.hls_reader_sites is not None else None
+    session.nano_client, session.sender_start = args.nano_client, args.sender_start
+    wrong = settings_mismatch(session.settings(), args.expect_settings)
+    if wrong:
+        raise SystemExit("the deployed settings are not the cell's: " + "; ".join(wrong))
+    log("entries: " + ", ".join(f"{site} {'/'.join(names)}" for site, names in session.entries.items())
+        + (f" (run plan of {session.topology_file})" if session.run_plan else " (no run plan: <site>-dist-a)"))
     # Name and addresses of every node, so that a listener's edge (the LL-HLS
     # probe's playlist_url_host) can be named afterwards.
     (session.dir / "lab-nodes.json").write_text(json.dumps(

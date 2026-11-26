@@ -347,12 +347,12 @@ class Audio:
         if lane == UDP_LANE:
             # One client: it has no --count, and it is not in the fan-out.
             stream = NEEDLETAIL[self.nt_base[0]][0]
-            return udp_command(f"https://{s.ip(site + '-dist-a')}:19444", stream, seconds, tag)
+            return udp_command(f"https://{s.ip(run.entry_node(s, site))}:19444", stream, seconds, tag)
         if lane.startswith("nt-"):
             base = "-".join(lane.split("-")[:2])
             stream = NEEDLETAIL[base][0]
             index = nt_index(base, self.pcm_samples)
-            entry = f"https://{s.ip(site + '-dist-a')}:19444"
+            entry = f"https://{s.ip(run.entry_node(s, site))}:19444"
             flags = reader_flags(lane[len(base):], self.nt_frame_ms().get(base, NT_SINGLE_WINDOW_MS))
             return (f"ntcmp hls --lane {lane} --mode chase {flags} "
                     f"--url '{entry}/live/{stream}/master.m3u8"
@@ -381,7 +381,7 @@ class Audio:
         base = self.nt_base[0]
         stream = NEEDLETAIL[base][0]
         index = nt_index(base, self.pcm_samples)
-        entry = f"https://{self.session.ip(site + '-dist-a')}:19444"
+        entry = f"https://{self.session.ip(run.entry_node(self.session, site))}:19444"
         out = []
         for i in range(count):
             name = UC_LANE if count == 1 else f"{UC_LANE}-{i:03d}"
@@ -403,7 +403,7 @@ class Audio:
         """needletail-reader itself on the audio stream: the reader of the product."""
         s = self.session
         return (f"/usr/local/bin/needletail-reader --stream {NEEDLETAIL[self.nt_base[0]][0]} "
-                f"--entry https://{s.ip(site + '-dist-a')}:19444 --session {tag}-product "
+                f"--entry https://{s.ip(run.entry_node(s, site))}:19444 --session {tag}-product "
                 f"--readers {count} --arrival-spread-ms {min(10000, 400 * count)} "
                 f"--duration-seconds {seconds} --buffer-ms 1000 --tls-ca {run.CA} "
                 f"--server-name {run.SERVER_NAME} --report nt-reader.reader.json")

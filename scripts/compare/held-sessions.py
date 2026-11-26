@@ -10,6 +10,13 @@ a step (the first 5 s after a session's first frame and the last 3 s left out),
 and a region carries a session by the record's rule: the better of its two UDP
 viewers has at least 99.5% of the frames on time and no stall over 500 ms.
 
+A restarted sender's catch-up burst (lead, 27 Nov: ffmpeg holds the first
+~0.66 s of a publish while it probes its input, then sends it 1-3 ms a frame,
+so lateness against the frames' due times climbs and drains over the first
+second) falls inside each session's first 5 s, which the scoring leaves out as
+it does a step's. compare-run.py --sender-start realtime removes the burst at
+the source.
+
     held-sessions.py SESSION_DIR [--step nt.throughput.2160p240] [--json out.json]
 """
 from __future__ import annotations
