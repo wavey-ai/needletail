@@ -174,7 +174,48 @@ def single_outages() -> None:
     save(fig, "single-outages.png")
 
 
+def repair_overhead() -> None:
+    allocations = ("0.05", "0.1", "0.2", "0.4")
+    positions = [100 * float(allocation) for allocation in allocations]
+    fig, (miss_ax, wire_ax) = plt.subplots(1, 2, figsize=(10.5, 4.9))
+    fig.subplots_adjust(left=0.09, right=0.97, top=0.65, bottom=0.23, wspace=0.32)
+    heading(
+        fig,
+        "10% repair cleared all misses on both paths",
+        "80.9 Mb/s H.264  •  5% random packet loss  •  Fixed RaptorQ FEC allocation",
+    )
+    styles = (
+        ("250", COLORS["librist"], "D", "-", 8, "white"),
+        ("30", COLORS["raptorq"], "o", "--", 4, COLORS["raptorq"]),
+    )
+    for rtt, color, marker, line, size, fill in styles:
+        rows = [
+            matched_case(set="C", variant="raptorq", rung="2160p80", rtt_ms=rtt,
+                         loss="5%", repair=allocation)
+            for allocation in allocations
+        ]
+        for axis, field in ((miss_ax, "lost_or_late_max"), (wire_ax, "overhead_pct")):
+            values = [float(row[field]) for row in rows]
+            axis.plot(positions, values, color=color, marker=marker, label=f"{rtt} ms RTT",
+                      linewidth=2, linestyle=line, markersize=size, markerfacecolor=fill)
+    miss_ax.set_title("Frame delivery", loc="left", fontsize=12, pad=13)
+    miss_ax.set_ylabel("Frames missing or late")
+    miss_ax.set_ylim(-8, 180)
+    wire_ax.set_title("Wire cost", loc="left", fontsize=12, pad=13)
+    wire_ax.set_ylabel("Sender wire overhead (%)")
+    wire_ax.set_ylim(0, 53)
+    for axis in (miss_ax, wire_ax):
+        axis.axvspan(9, 11, color=COLORS["raptorq"], alpha=0.09)
+        axis.set_xticks(positions, [f"{position:.0f}%" for position in positions])
+        axis.set_xlabel("Configured repair allocation")
+        axis.grid(axis="y")
+    handles, labels = miss_ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.52, 0.025), ncol=2, frameon=False)
+    save(fig, "repair-overhead.png")
+
+
 if __name__ == "__main__":
     real_path_latency()
     loss_profiles()
     single_outages()
+    repair_overhead()
