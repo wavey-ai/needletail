@@ -1,12 +1,12 @@
-# Our RaptorQ SOPMOD is clobbering SRT and RIST on added latency
+# Wavey RaptorQ kept added p99 latency to 17–23 ms in long-haul 4K tests
 
-**17–23 ms at p99 versus 293–1,033 ms** on two long-haul 4K routes with 1% injected random packet loss. All three transports delivered every frame on time in those runs.
+On the same two routes with 1% injected random packet loss, **SRT and RIST added 293–1,033 ms at p99** with the tested receive buffers. All three transports delivered every frame on time.
 
 **Loss caveat.** At 165.1 Mb/s, FEC-only RaptorQ missed more frames than plain librist and libsrt during bursts and recurring 20 ms outages. It carried every frame through sustained 1% and 5% random loss when repair was sized for those rates. Adding whole-frame retransmission (ARQ) cleared the tested burst and recurring-outage cases at 30–250 ms RTT, with extra delay on repaired frames.
 
 **24 November 2026 · 972 direct transport cases · Dedicated Linode hosts**
 
-SOPMOD is our nickname here for Wavey’s RQD2 transport and repair policies. RQD2 groups a video frame into a block, identifies its packets, and carries standard RaptorQ forward error correction. When enough symbols arrive, the receiver can reconstruct the frame without waiting for a network round trip. On the 4K profile here, the 32-byte Wavey header accounts for about 2.4% of the UDP payload, alongside a 4-byte RaptorQ symbol identifier and a 1,316-byte symbol. [RaptorQ standard](https://www.rfc-editor.org/rfc/rfc6330.html), [Wavey wire format](https://github.com/wavey-ai/raptor-fec/blob/90f0fdda25c150bf266048a9d3821998848aad3b/README.md)
+Wavey’s RQD2 transport groups each video frame into a block, identifies its packets, and uses standard RaptorQ forward error correction. When enough symbols arrive, the receiver can reconstruct the frame without waiting for a network round trip. On the 4K profile here, the 32-byte Wavey header accounts for about 2.4% of the UDP payload, alongside a 4-byte RaptorQ symbol identifier and a 1,316-byte symbol. [RaptorQ standard](https://www.rfc-editor.org/rfc/rfc6330.html), [Wavey wire format](https://github.com/wavey-ai/raptor-fec/blob/90f0fdda25c150bf266048a9d3821998848aad3b/README.md)
 
 The standalone `transport-bench` harness sent the same H.264 video through each adapter, one transport at a time. The results measure direct transport and frame completion. The [deployed Needletail mesh results](../../2026-11-22-4k-against-cloudflare-and-livekit.md) are a separate set of tests.
 
