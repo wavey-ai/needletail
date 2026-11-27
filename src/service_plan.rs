@@ -800,6 +800,12 @@ impl RelayProgram {
                     link.child_node_id, link.receiver_bind, standby.node_id
                 ));
             }
+            if sender_binds.contains(&(link.child_node_id.as_str(), link.receiver_bind)) {
+                violations.push(format!(
+                    "node {} reuses RelaySession sender bind {} for origin standby {}",
+                    link.child_node_id, link.receiver_bind, standby.node_id
+                ));
+            }
         }
 
         let secondary_carriers = self
@@ -2457,6 +2463,20 @@ mod tests {
         assert!(violations[0].contains(
             "node f1 reuses RelaySession receiver bind 127.0.0.1:22001 for origin standby contrib-b"
         ));
+
+        let mut program = two_contributor_program();
+        let sender_bind = program
+            .carrier_links
+            .iter()
+            .find(|link| link.parent_node_id == "f1")
+            .expect("f1 downstream carrier")
+            .sender_bind;
+        standby_of(&mut program).carrier_links[0].receiver_bind = sender_bind;
+        let violations = program_violations(&program);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert!(violations[0].contains(&format!(
+            "node f1 reuses RelaySession sender bind {sender_bind} for origin standby contrib-b"
+        )));
 
         // f1's failover listener for f4 binds 22512.
         let mut program = two_contributor_program();

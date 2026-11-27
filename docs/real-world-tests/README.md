@@ -1,9 +1,10 @@
 # Real-world test records
 
-Needletail keeps durable notes for every test that reaches deployed hosts,
-provider networks, or public Internet paths. Full raw captures are written
-locally under `target/`. Because `target/` is not
-versioned, each completed or failed run also receives a sanitized,
+Needletail keeps durable notes for tests that reach deployed hosts,
+provider networks, or public Internet paths. Current Linode and local runs
+archive raw captures on the Linode dev box under `~/needletail-data/<run-id>/`
+with a manifest. Older records may point to their original `target/` paths.
+Each completed or failed run also receives a sanitized,
 machine-readable summary under [`evidence/`](evidence/README.md). The dated
 narrative captures the context needed to reproduce and interpret it without
 storing credentials, private keys, access tokens, or host secrets.
@@ -63,12 +64,19 @@ Current edge hardening record:
 A fault campaign of about 80 scenarios against the regional cache in a local namespace lab and on Linode Nanodes, with what broke, what was fixed and what is open.
 Its strict result is `FAIL`: the scenarios that did not hold are listed in the record under "Still open".
 
-Current comparison with other networks, audio:
+Current integration baseline:
+[2026-11-27 integration 6 on main](2026-11-27-integration-6-main.md).
+The four-region Wave 12 run recorded 58 of 64 audio wins against self-hosted
+LiveKit and 63 of 64 against LiveKit Cloud. Its 247 Mbit/s 4K soak passed by
+the better-viewer rule, with admission and held-session gaps. The record
+links the tested revisions, raw archive, and verification.
+
+Earlier comparison with other networks, audio:
 [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail (RaptorQ FEC over UDP and LL-HLS, smallest frames by default), Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud, on dedicated-CPU instances only.
 Wave 7 (four regions, Sydney included) won 71 of 84 audio metrics against self-hosted LiveKit in the same sessions, lost 11 and tied 2. Its 1 ms lanes still stalled at one London edge in the first session after the deploy; the 11 losses include 4 by 0.1 to 0.5 ms with standard 2.5 ms Opus. A new listener's first audio came in 10 to 24 ms, against about 160 on LiveKit. On waves 5 and 6 (London, New York and Tokyo; Sydney had no dedicated capacity) Needletail's UDP mode is ahead of every system at the median in every region (wave 6's 1 ms lanes had a p99 regression from edge stalls): 1 ms Opus Custom 2 to 4 ms before self-hosted LiveKit's best 2.5 ms Opus, 1 ms PCM 1 to 5 ms before LiveKit's PCM, 15 to 27 ms before LiveKit Cloud, with nothing lost to 1%, 5% or burst loss. On earlier builds self-hosted LiveKit led by about half a millisecond outside Tokyo.
 
-Current comparison with other networks, 4K video:
+4K comparison history:
 [2026-11-22 4K against Cloudflare and LiveKit](2026-11-22-4k-against-cloudflare-and-livekit.md).
 Raw throughput first (waves 6 and 7 regressed, to 25 Mbit/s whole and to 25 in four regions with 40 nearly whole, under investigation: the forwarders and edges drop 4K at their sockets): Needletail's wave 5 build, with its UDP GSO on, carried 247 Mbit/s of 4K whole to London, New York and Tokyo, within 3 ms of LiveKit's SFU at 81 Mbit/s and with every frame on time at 122; LiveKit Cloud carried 164 (81 on the morning of wave 5), self-hosted LiveKit 40 to 81, Cloudflare 5 to 16; earlier Needletail builds 16 to 122. Also the latency, first frame, loss and crowds of what each carries, the Needletail mesh hop by hop under long-haul loss, and its three tiers.
 

@@ -13,6 +13,10 @@ and names the exact failed check.
 
 Evidence index:
 
+- [20261127-integration-6-main.json](20261127-integration-6-main.json) records the integration 6 pins, Linode archive, regenerated Wave 12 results, and merge verification.
+- [20261126-4k-wave12-audio-scoreboard.json](20261126-4k-wave12-audio-scoreboard.json) and [20261126-4k-wave12-audio-scoreboard-lkcloud.json](20261126-4k-wave12-audio-scoreboard-lkcloud.json) retain the four-region audio comparisons.
+- [20261126-4k-wave12-video-w12-soak-scoreboard.json](20261126-4k-wave12-video-w12-soak-scoreboard.json) retains the 300-second 4K cell, including per-region viewer results.
+- `20261121T184928Z-client-udp.json`, `20261121T194453Z-client-udp.json`, `20261121T194816Z-client-udp.json` and `20261121T195150Z-client-udp.json` retain the earlier Linode client UDP qualification and comparison runs. [Dated report](../2026-11-21-client-udp.md)
 - `20261119T021701Z-linode-small-mesh.json`: 27-Nanode Linode series with regional distributors and private-VLAN LL-HLS edges: tuning sweeps, loss, relay failover, 200 concurrent readers, a 10-minute soak with a strict failure in Tokyo and Sydney, and ECMP source-port selection.
 - `20261119T200101Z-regional-cache.json`: 15-instance Linode run of the regional LL-HLS cache features on Nanodes: demand replication, load balance with admission, failover, stall and drain without a missing part, reader assignment and pinning, for 4K video and lossless audio, with a cache-mesh symbol size comparison.
 - `20261121T044850Z-edge-campaign.json`: 15-instance Linode run of the edge fault campaign: 40 scenarios of node failure, cache-network loss, clock skew, full disk, capacity of each role on a Nanode, admission, flash crowd, churn and hls.js playback, each with its question, criterion, checks and result. The result is `failed`: 24 pass, 3 are named gaps and 13 fail, and the record says why for each.

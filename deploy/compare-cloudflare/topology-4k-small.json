@@ -1,6 +1,7 @@
 {
   "description": "4K-only sweep of a build (lead's request, 24 Nov 2026): the smallest lab for compare-run.py's throughput phase, all dedicated. Needletail merged topology: a contributor alone on a g6-dedicated-4 in London; in each of London, New York, Tokyo and Sydney two distributors (forwarders) and ONE edge on a private VLAN, g6-dedicated-2. Measurement hosts unchanged from topology-dedicated-syd2: in each region one -nano (g6-dedicated-2) and one -view (g6-dedicated-4; Sydney g6-dedicated-2); lon-src (g6-dedicated-4) sends the clip. No LiveKit, no backbone relays (unused by the merged topology), no listener hosts.",
   "image": "linode/debian13",
+  "plan_stream_mbit": 247,
   "nodes": [
     {
       "name": "syd-dist-a",

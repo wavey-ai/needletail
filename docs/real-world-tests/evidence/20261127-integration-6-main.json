@@ -1,0 +1,90 @@
+{
+  "schema": "needletail.integration-record.v1",
+  "integration": 6,
+  "selected_head": "edb966fb579f44c255256d3defd0bbe916d79431",
+  "tested_deployment": {
+    "needletail": "6e402408dd510916bd6813015c638ed526032724",
+    "needletail_compare": "28d769864f837f51680b1ed59cb2e11e525ce7de",
+    "av_mesh": "74d0c042027a35e40486f8c41103d9f82387c479",
+    "av_contrib": "8a6a8bc0e50323e2b81a0a64d28e228b9480dd76",
+    "playlists": "68f235be997e34b06d4cf1b97a33e1742022cb9c"
+  },
+  "qualification": {
+    "run_id": "cmpd9",
+    "raw_archive": "~/needletail-data/cmpd9/",
+    "manifest_sha256": "d9c8d025faa02f1ca4665ea411eb5a788aaa36d5938957a364a9a4dd9e7f5787",
+    "archive_marked_complete": true,
+    "manifest_files_found": 7093,
+    "manifest_files_missing": 0,
+    "regions": ["gb-lon", "us-east", "ap-northeast", "ap-southeast"],
+    "started_at_utc": "2026-11-26T01:15:58.295Z",
+    "ended_at_utc": "2026-11-26T02:51:21.421Z",
+    "teardown_recorded_at_utc": "2026-11-26T02:51:21.000Z",
+    "billed_instance_hours": 64,
+    "cost_usd": 4.212
+  },
+  "audio_scoreboard": {
+    "self_hosted_livekit": {"compared": 64, "wins": 58, "ties": 1, "losses": 5},
+    "livekit_cloud": {"compared": 64, "wins": 63, "ties": 0, "losses": 1},
+    "excluding_measurement_host_stop_rows": {
+      "self_hosted_livekit": {"compared": 51, "wins": 46, "ties": 1, "losses": 4},
+      "livekit_cloud": {"compared": 51, "wins": 51, "ties": 0, "losses": 0}
+    },
+    "opus_custom_1ms_loss_test": {"regions": 4, "loss_profiles": 3, "missing_units": 0}
+  },
+  "video_247_mbps": {
+    "threshold_on_time_percent": 99.5,
+    "maximum_stall_ms": 500,
+    "scoring_viewer": "better of two UDP viewers per region",
+    "soak_seconds": 300,
+    "soak_regions_passing": 4,
+    "ladder_london_on_time_percent": 99.444,
+    "ladder_regions_passing": 3,
+    "stagger_regions_passing": 1,
+    "repair_regions_passing": 1,
+    "held_session_1_regions_passing": 0,
+    "held_sessions_unscored_due_to_recorder": [2, 3]
+  },
+  "verification": {
+    "raw_archive": "~/needletail-data/needletail-main-verify-20261127T015458Z/",
+    "additional_linode_instance_cost_usd": 0,
+    "linode_source_verification_head": "8e26f5225b855f957f6a995605e4d939c39f4edf",
+    "destination_rust_tests_macos_after_socket_fix": {"passed": 132, "failed": 0},
+    "linode_rust_workspace_tests": {"passed": 132, "failed": 0},
+    "linode_mission_control_tests": {"passed": 22, "failed": 0},
+    "linode_release_deployment_tests_after_topology_fix": {"passed": 7, "failed": 0},
+    "linode_python_scripts_after_topology_fix": {"run": 1058, "failed": 0, "skipped": 1},
+    "linode_compare_suite_superset_before_wip_cutoff": {"run": 417, "failed": 0, "skipped": 5},
+    "destination_compare_audio_tests": {"run": 20, "failed": 0, "skipped": 1},
+    "checks_passed": ["product boundary", "Rust formatting", "compiled multicloud fixture", "Wave 12 audio scoreboards reproduce", "Wave 12 video rows and ceilings reproduce"],
+    "legacy_evidence_validator": {
+      "status": "fails on baseline and candidate",
+      "file": "20260721T061329Z-h264-4k-viewer-capacity.json",
+      "reason": "The July snapshot records zero stopped GCP instances; the historical validator requires six."
+    },
+    "linode_rust_clippy": {
+      "status": "failed",
+      "rust": "1.100.0",
+      "reason": "Newer Clippy flags an existing empty-slice assertion in the unchanged capability-controller tests."
+    },
+    "github_actions_candidate": {
+      "status": "startup_failure",
+      "jobs_started": 0,
+      "url": "https://github.com/wavey-ai/needletail/actions/runs/45804615794"
+    }
+  },
+  "local_integration_7_archives": [
+    {
+      "run_id": "gate-int8-b4r-20261126c",
+      "raw_archive": "~/needletail-data/gate-int8-b4r-20261126c/",
+      "manifest_sha256": "903bb60396ab2154c7758190a175c3cb32d505333427c070c6d2cb33b4d66519",
+      "manifest_files_found": 196
+    },
+    {
+      "run_id": "int8-late-b4r-20261126c",
+      "raw_archive": "~/needletail-data/int8-late-b4r-20261126c/",
+      "manifest_sha256": "7527984b63af89e918876d304af38f0db5c2e27a276404332d306c745e179297",
+      "manifest_files_found": 61
+    }
+  ]
+}
