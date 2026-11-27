@@ -2,6 +2,10 @@
 
 **24 November 2026 · 972 direct transport cases · Dedicated Linode hosts**
 
+**Wavey’s live-video transport is built on standard RaptorQ forward error correction.** Wavey’s RQD2 layer groups each video frame into a block, identifies its packets, and controls how much repair data to send. A receiver can reconstruct missing data as soon as enough symbols arrive, without waiting for a network round trip. The hybrid mode can request a missing frame when packet loss exceeds the repair budget. [RaptorQ standard](https://www.rfc-editor.org/rfc/rfc6330.html), [Wavey wire format](https://github.com/wavey-ai/raptor-fec/blob/90f0fdda25c150bf266048a9d3821998848aad3b/README.md)
+
+In the tested 4K profile, Wavey’s 32-byte RQD2 header sits alongside the standard 4-byte RaptorQ symbol identifier and a 1,316-byte symbol. The Wavey header accounts for about 2.4% of each UDP payload. The measurements below cover the complete transport with the settings used in the benchmark.
+
 RaptorQ FEC completed frames much earlier than RIST and SRT on paths with random packet loss. Its weak spot was clustered loss. Burst loss and brief outages exhausted its repair budget and left frames missing. Adding whole-frame retransmission recovered those frames in the tested repeating-outage cases, with a longer delay on repaired frames.
 
 The standalone `transport-bench` harness sent the same H.264 video through each adapter, one transport at a time. The results measure direct transport and frame completion. The [deployed Needletail mesh results](../../2026-11-22-4k-against-cloudflare-and-livekit.md) are a separate set of tests.
