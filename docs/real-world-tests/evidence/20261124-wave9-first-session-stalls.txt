@@ -1,0 +1,155 @@
+Wave 9, lab cmpd5, session waudio9, step audio.opus-2.5.baseline.clean (the first 1 ms session after the deploy). Times UTC, 23 Nov 2026.
+
+1. Listener view: arrival-time episodes where a unit's latency was >50 ms above the listener's median (target/stallwin.py, raw probe CSVs).
+  lon-nano  lkcloud      first 23:40:01.277 max   1555.0 ms  episodes: 23:40:03.345-03.346 n=596; 23:40:06.016-06.016 n=9; 23:40:58.131-58.132 n=79
+  lon-nano  lkregion     first 23:40:01.174 max   2482.7 ms  episodes: 23:40:04.292-04.326 n=986; 23:40:06.016-06.016 n=9; 23:40:58.131-58.131 n=20
+  lon-nano  nt-popus-h3  first 23:40:00.280 max   6550.7 ms  episodes: 23:40:00.280-01.810 n=469; 23:40:04.315-10.050 n=12201; 23:40:26.937-27.033 n=104
+  lon-nano  nt-popus-w   first 23:40:00.222 max   3409.5 ms  episodes: 23:40:00.222-01.804 n=3028; 23:40:03.358-08.092 n=7664; 23:40:10.886-12.679 n=3094; 23:40:32.647-32.892 n=533; 23:40:53.421-53.484 n=23
+  lon-nano  nt-popus     first 23:40:00.287 max   6587.2 ms  episodes: 23:40:00.287-01.805 n=292; 23:40:03.340-14.956 n=17287; 23:40:26.938-26.980 n=84
+  lon-nano  nt-uc        first 23:39:57.097 max   2211.7 ms  episodes: 23:39:58.138-58.146 n=966; 23:40:00.225-01.394 n=2645; 23:40:03.347-03.356 n=2169; 23:40:06.017-06.017 n=24; 23:40:10.863-11.141 n=1341; 23:40:32.628-32.644 n=302
+  lon-view  lkcloud      first 23:39:57.478 max     27.5 ms  episodes: 
+  lon-view  lkregion     first 23:39:57.318 max    826.1 ms  episodes: 23:39:59.461-59.472 n=196
+  lon-view  nt-popus-h3  first 23:39:57.339 max   1460.2 ms  episodes: 23:39:57.805-59.419 n=1058; 23:40:01.127-02.117 n=914; 23:40:10.887-11.765 n=2182; 23:40:24.727-24.758 n=15; 23:40:32.646-32.759 n=409
+  lon-view  nt-popus-w   first 23:39:57.337 max   1467.9 ms  episodes: 23:39:58.191-59.398 n=1076; 23:40:01.830-02.121 n=933; 23:40:10.886-11.667 n=2066; 23:40:24.838-25.399 n=2; 23:40:32.647-32.799 n=439
+  lon-view  nt-popus     first 23:39:57.335 max   1470.7 ms  episodes: 23:39:57.855-02.500 n=3766; 23:40:10.886-12.652 n=3072; 23:40:24.950-24.950 n=1; 23:40:32.647-32.890 n=547
+  lon-view  nt-uc        first 23:39:57.088 max   1336.0 ms  episodes: 23:40:01.085-01.903 n=894; 23:40:10.863-11.140 n=1341; 23:40:32.628-32.644 n=302
+  new-nano  lkcloud      first 23:40:01.490 max    110.2 ms  episodes: 23:40:31.210-31.210 n=1
+  new-nano  lkregion     first 23:40:00.866 max    172.7 ms  episodes: 23:40:00.866-00.866 n=17; 23:40:36.187-36.187 n=2
+  new-nano  nt-popus-h3  first 23:39:58.411 max    278.7 ms  episodes: 23:39:58.449-00.300 n=1239; 23:40:05.508-05.523 n=2; 23:40:11.821-11.835 n=21; 23:40:18.308-18.347 n=38; 23:40:58.054-58.074 n=26
+  new-nano  nt-popus-w   first 23:39:58.408 max    478.3 ms  episodes: 23:39:58.408-00.082 n=1421; 23:40:02.646-02.862 n=139; 23:40:19.037-19.044 n=8; 23:40:31.230-31.236 n=3; 23:40:36.188-36.237 n=129; 23:40:42.035-42.065 n=22
+  new-nano  nt-popus     first 23:39:58.446 max    321.2 ms  episodes: 23:39:58.446-00.703 n=2312; 23:40:18.305-18.318 n=37
+  new-nano  nt-uc        first 23:39:57.441 max    172.5 ms  episodes: 23:39:57.441-57.446 n=92; 23:39:58.835-59.581 n=52; 23:40:02.660-02.664 n=5; 23:40:19.035-19.035 n=1; 23:40:48.104-48.104 n=15
+  new-view  lkcloud      first 23:39:59.029 max     94.2 ms  episodes: 
+  new-view  lkregion     first 23:39:58.943 max    230.7 ms  episodes: 23:39:58.943-58.945 n=60
+  new-view  nt-popus-h3  first 23:39:57.775 max    120.0 ms  episodes: 23:39:57.816-57.888 n=57
+  new-view  nt-popus-w   first 23:39:57.739 max    213.6 ms  episodes: 23:39:57.739-58.120 n=295
+  new-view  nt-popus     first 23:39:57.722 max    129.5 ms  episodes: 23:39:57.772-57.786 n=2; 23:40:01.438-01.569 n=116; 23:40:10.679-10.684 n=11; 23:40:27.797-27.991 n=157
+  new-view  nt-uc        first 23:39:57.108 max    136.9 ms  episodes: 23:39:57.108-57.972 n=70
+  tok-nano  lkcloud      first 23:40:05.986 max    292.6 ms  episodes: 23:40:54.877-54.877 n=44
+  tok-nano  nt-popus-h3  first 23:39:57.736 max   6928.9 ms  episodes: 23:39:57.775-57.848 n=28; 23:39:59.106-59.760 n=582; 23:40:05.068-11.661 n=13220; 23:40:30.848-31.565 n=1151; 23:40:40.656-40.759 n=195; 23:40:54.875-55.651 n=369
+  tok-nano  nt-popus-w   first 23:39:57.755 max   6925.7 ms  episodes: 23:39:57.789-57.840 n=17; 23:39:59.110-59.718 n=648; 23:40:05.153-10.993 n=12536; 23:40:30.839-31.405 n=981; 23:40:40.649-40.748 n=172; 23:40:55.555-55.656 n=137
+  tok-nano  nt-popus     first 23:39:57.767 max   6614.0 ms  episodes: 23:39:57.838-57.848 n=13; 23:39:59.110-59.761 n=741; 23:40:05.075-18.258 n=19582; 23:40:30.838-31.882 n=1473; 23:40:40.649-40.802 n=249; 23:40:54.894-55.720 n=552
+  tok-nano  nt-uc        first 23:39:57.724 max   5420.0 ms  episodes: 23:39:59.140-59.154 n=1225; 23:40:05.072-05.131 n=5321; 23:40:30.871-30.874 n=476; 23:40:40.646-40.647 n=97; 23:40:54.880-55.557 n=193
+  tok-view  lkcloud      first 23:39:59.843 max    147.1 ms  episodes: 
+  tok-view  lkregion     first 23:39:58.160 max    241.7 ms  episodes: 23:39:59.281-59.282 n=32
+  tok-view  nt-popus-h3  first 23:39:57.579 max    306.9 ms  episodes: 23:39:58.491-59.040 n=30; 23:40:13.114-13.131 n=21; 23:40:27.500-27.551 n=194
+  tok-view  nt-popus-w   first 23:39:57.573 max    597.6 ms  episodes: 23:39:58.039-58.735 n=11; 23:40:24.940-24.940 n=1; 23:40:30.838-30.984 n=575; 23:40:40.649-40.682 n=128; 23:40:55.555-55.582 n=103
+  tok-view  nt-popus     first 23:39:57.574 max    507.8 ms  episodes: 23:39:58.008-59.480 n=1421; 23:40:13.113-13.121 n=20; 23:40:24.814-25.279 n=433; 23:40:27.499-27.596 n=243
+  tok-view  nt-uc        first 23:39:57.289 max    291.3 ms  episodes: 23:40:13.106-13.106 n=6; 23:40:27.486-27.487 n=136
+  syd-nano  lkcloud      first 23:39:59.860 max   1513.0 ms  episodes: 23:40:00.698-00.699 n=303; 23:40:02.423-02.426 n=530; 23:40:44.273-44.274 n=6
+  syd-nano  lkregion     first 23:39:58.220 max   2876.9 ms  episodes: 23:39:59.671-59.673 n=92; 23:40:00.705-00.718 n=296; 23:40:02.430-02.446 n=538; 23:40:44.275-44.275 n=7; 23:40:53.029-53.095 n=1106
+  syd-nano  nt-popus-h3  first 23:39:59.267 max   2077.0 ms  episodes: 23:39:59.296-01.049 n=707; 23:40:02.427-04.677 n=4104; 23:40:13.685-13.686 n=9; 23:40:23.605-23.605 n=1; 23:40:38.943-39.140 n=114
+  syd-nano  nt-popus-w   first 23:40:00.727 max   2887.2 ms  episodes: 23:40:00.727-01.054 n=313; 23:40:02.428-03.702 n=3408; 23:40:07.985-08.135 n=230; 23:40:29.505-29.627 n=213; 23:40:38.927-38.959 n=8; 23:40:44.276-44.349 n=80
+  syd-nano  nt-popus     first 23:39:59.269 max   2909.9 ms  episodes: 23:39:59.311-01.042 n=408; 23:40:02.428-07.566 n=7303; 23:40:39.107-39.141 n=36; 23:40:44.274-44.295 n=36; 23:40:53.027-55.875 n=5543
+  syd-nano  nt-uc        first 23:39:59.035 max   1505.2 ms  episodes: 23:40:00.701-00.704 n=727; 23:40:02.420-02.448 n=1356; 23:40:04.590-04.591 n=35
+  syd-view  lkcloud      first 23:39:59.859 max    159.1 ms  episodes: 
+  syd-view  lkregion     first 23:39:58.300 max    407.5 ms  episodes: 23:39:59.672-59.675 n=92
+  syd-view  nt-popus-h3  first 23:39:59.624 max    596.7 ms  episodes: 23:39:59.830-01.313 n=217; 23:40:02.394-02.489 n=83; 23:40:03.498-03.498 n=1; 23:40:04.595-04.671 n=77; 23:40:06.211-06.211 n=1; 23:40:09.495-09.499 n=2
+  syd-view  nt-popus-w   first 23:39:59.023 max    559.6 ms  episodes: 23:39:59.941-59.993 n=13; 23:40:02.175-02.192 n=6; 23:40:07.985-08.188 n=289; 23:40:09.617-09.617 n=1; 23:40:14.435-14.457 n=7; 23:40:23.664-24.207 n=106
+  syd-view  nt-popus     first 23:39:59.616 max    497.8 ms  episodes: 23:39:59.833-02.522 n=1787; 23:40:04.591-04.690 n=119; 23:40:11.468-11.736 n=32; 23:40:13.408-13.458 n=10; 23:40:14.542-14.678 n=3; 23:40:24.069-24.915 n=837
+  syd-view  nt-uc        first 23:39:59.608 max    210.8 ms  episodes: 23:40:02.389-02.390 n=14; 23:40:04.590-04.591 n=33
+
+2. Edge and distributor view: gaps over 20 ms between consecutive parts at each stage of the hop journal (target/commitgaps.py). Each journal is a ring holding about 40 s; its coverage is listed. The 10 s udp_sent gaps at 23:40:57 are the end of the clean step.
+hop journal coverage (first-session):
+  lon-dist-a-hops-3001.ndjson      23:40:24.396 - 23:41:08.087
+  lon-dist-b-hops-3001.ndjson      23:40:24.366 - 23:41:08.056
+  lon-edge-1-hops-3001.ndjson      23:40:36.381 - 23:41:08.071
+  lon-edge-2-hops-3001.ndjson      23:40:27.584 - 23:41:08.078
+  new-edge-1-hops-3001.ndjson      23:40:36.680 - 23:41:07.953
+  new-edge-2-hops-3001.ndjson      23:40:27.707 - 23:41:07.960
+  syd-edge-1-hops-3001.ndjson      23:40:36.622 - 23:41:08.248
+  syd-edge-2-hops-3001.ndjson      23:40:27.737 - 23:41:08.251
+  tok-edge-1-hops-3001.ndjson      23:40:31.312 - 23:41:08.161
+  tok-edge-2-hops-3001.ndjson      23:40:36.705 - 23:41:08.193
+lon-dist-a-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_forward,relay_woken,watermark
+    relay_first: n=43690 gaps>20ms=0 
+    committed: n=43691 gaps>20ms=0 
+    udp_sent: n=0 gaps>20ms=0 
+lon-dist-b-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_forward,relay_woken,watermark
+    relay_first: n=43690 gaps>20ms=1 [23:41:01.450 63ms seq 77449->77450]
+    committed: n=43691 gaps>20ms=1 [23:41:01.449 70ms seq 77448->77449]
+    udp_sent: n=0 gaps>20ms=0 
+lon-edge-1-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,udp_sent,watermark
+    relay_first: n=31690 gaps>20ms=2 [23:40:48.329 23ms seq 64327->64328] [23:40:52.530 21ms seq 68528->68529]
+    committed: n=31690 gaps>20ms=2 [23:40:48.329 24ms seq 64327->64328] [23:40:52.530 23ms seq 68528->68529]
+    udp_sent: n=20919 gaps>20ms=3 [23:40:48.329 24ms seq 64327->64328] [23:40:52.530 22ms seq 68528->68529] [23:40:57.080 10773ms seq 73078->83851]
+lon-edge-2-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,watermark
+    relay_first: n=40493 gaps>20ms=0 
+    committed: n=40493 gaps>20ms=2 [23:41:07.825 21ms seq 83824->83825] [23:41:07.865 22ms seq 83864->83865]
+    udp_sent: n=0 gaps>20ms=0 
+new-edge-1-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,udp_sent,watermark
+    relay_first: n=31273 gaps>20ms=0 
+    committed: n=31273 gaps>20ms=0 
+    udp_sent: n=20359 gaps>20ms=0 
+new-edge-2-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,udp_sent,watermark
+    relay_first: n=40254 gaps>20ms=0 
+    committed: n=40255 gaps>20ms=3 [23:40:48.039 65ms seq 64007->64008] [23:40:57.393 40ms seq 73361->73362] [23:40:57.436 44ms seq 73404->73405]
+    udp_sent: n=30062 gaps>20ms=2 [23:40:48.039 65ms seq 64007->64008] [23:40:57.324 10195ms seq 73292->83487]
+syd-edge-1-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,udp_sent,watermark
+    relay_first: n=31626 gaps>20ms=1 [23:40:53.909 20ms seq 69782->69783]
+    committed: n=31626 gaps>20ms=3 [23:40:39.239 20ms seq 55112->55113] [23:40:53.909 21ms seq 69782->69783] [23:40:55.005 20ms seq 70878->70879]
+    udp_sent: n=20792 gaps>20ms=3 [23:40:39.239 20ms seq 55112->55113] [23:40:53.909 22ms seq 69782->69783] [23:40:55.005 22ms seq 70878->70879]
+syd-edge-2-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,watermark
+    relay_first: n=40513 gaps>20ms=1 [23:40:29.350 152ms seq 45223->45224]
+    committed: n=40514 gaps>20ms=1 [23:40:29.352 152ms seq 45223->45224]
+    udp_sent: n=0 gaps>20ms=0 
+tok-edge-1-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,udp_sent,watermark
+    relay_first: n=36849 gaps>20ms=0 
+    committed: n=36849 gaps>20ms=1 [23:40:57.079 20ms seq 72972->72973]
+    udp_sent: n=25963 gaps>20ms=0 
+tok-edge-2-hops-3001.ndjson stages: committed,relay_decoded,relay_first,relay_woken,reply,udp_sent,watermark
+    relay_first: n=31489 gaps>20ms=0 
+    committed: n=31489 gaps>20ms=2 [23:40:40.499 148ms seq 56392->56393] [23:40:55.426 125ms seq 71319->71320]
+    udp_sent: n=21010 gaps>20ms=2 [23:40:40.499 147ms seq 56392->56393] [23:40:55.426 129ms seq 71319->71320]
+
+3. Node journals, av-mesh warnings and fan-out switches (archive cmpd5 nodes/*/journal).
+new-edge-1 2026-11-23T23:39:57.076467+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=13028 new_watermark=13043 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+lon-edge-2 2026-11-23T23:39:57.090916+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=13082 new_watermark=13088 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+lon-edge-1 2026-11-23T23:39:57.092487+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=13082 new_watermark=13089 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+tok-edge-2 2026-11-23T23:39:57.298333+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=13177 new_watermark=13186 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+tok-edge-1 2026-11-23T23:39:57.309947+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=13169 new_watermark=13200 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+new-edge-2 2026-11-23T23:39:57.376782+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=13328 new_watermark=13343 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+syd-edge-2 2026-11-23T23:39:58.641045+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=14492 new_watermark=14511 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+syd-edge-1 2026-11-23T23:39:59.042516+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=14904 new_watermark=14914 skipped_parts=0 idle_flush=false gap_skips_total=0 skipped_parts_total=0
+syd-edge-1 2026-11-23T23:39:59.785645+00:00  INFO av_mesh::fast_plane::edge_clients: edge client UDP: the fan-out to clients runs off the ingest thread class="audio" threads=2 inline_shard=false
+lon-edge-2 2026-11-23T23:40:01.171217+00:00  INFO av_mesh::fast_plane::edge_clients: edge client UDP: the fan-out to clients runs off the ingest thread class="audio" threads=2 inline_shard=false
+lon-edge-1 2026-11-23T23:40:01.809063+00:00  INFO av_mesh::fast_plane::edge_clients: edge client UDP: the fan-out to clients runs off the ingest thread class="audio" threads=2 inline_shard=false
+new-edge-2 2026-11-23T23:40:02.662854+00:00  INFO av_mesh::fast_plane::edge_clients: edge client UDP: the fan-out to clients runs off the ingest thread class="audio" threads=2 inline_shard=false
+lon-edge-1 2026-11-23T23:40:10.975552+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=25842 new_watermark=25872 skipped_parts=15 idle_flush=false gap_skips_total=1 skipped_parts_total=15
+lon-edge-1 2026-11-23T23:40:11.785544+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=329 deadline_drops_total=329
+tok-edge-1 2026-11-23T23:40:13.105065+00:00  INFO av_mesh::fast_plane::edge_clients: edge client UDP: the fan-out to clients runs off the ingest thread class="audio" threads=2 inline_shard=false
+tok-edge-2 2026-11-23T23:40:30.833811+00:00  INFO av_mesh::fast_plane::edge_clients: edge client UDP: the fan-out to clients runs off the ingest thread class="audio" threads=2 inline_shard=false
+syd-dist-b 2026-11-23T23:40:55.054069+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=69948 new_watermark=70925 skipped_parts=36 idle_flush=false gap_skips_total=1 skipped_parts_total=36
+syd-dist-b 2026-11-23T23:40:55.200989+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=36 deadline_drops_total=36
+lon-edge-1 2026-11-23T23:41:10.048364+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=85003 new_watermark=85070 skipped_parts=0 idle_flush=false gap_skips_total=1 skipped_parts_total=15
+lon-edge-1 2026-11-23T23:41:10.783650+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=50 deadline_drops_total=379
+syd-dist-b 2026-11-23T23:41:12.486020+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=87327 new_watermark=88351 skipped_parts=88 idle_flush=false gap_skips_total=2 skipped_parts_total=124
+syd-dist-b 2026-11-23T23:41:13.200882+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=88 deadline_drops_total=124
+tok-edge-2 2026-11-23T23:41:14.678932+00:00  INFO av_mesh: advanced canonical contiguous watermark past an unrecovered gap stream_id=3001 old_watermark=89095 new_watermark=89112 skipped_parts=9 idle_flush=false gap_skips_total=1 skipped_parts_total=9
+tok-edge-2 2026-11-23T23:41:14.697732+00:00  WARN av_mesh::fast_plane::relay: dropped expired RelaySession datagrams since previous ingress report class="audio" deadline_drops=2383 deadline_drops_total=2383
+
+4. Edge commit stops over 50 ms for the whole first session, from the server stamps (edge_committed_unix_us) that each LL-HLS probe carries; seconds after T0 = 1795477184 (23:39:44 UTC). Lanes with identical stops are served by the same edge: in London, the 14.304/17.137/25.529/48.295 set is lon-edge-1 and the 16.871/17.176 set is lon-edge-2 (from the probes' playlist host). The two overlap from 17.176 to 17.622.
+  lon-nano  nt-popus-h3  16.871->17.169 (298 ms); 17.176->17.622 (446 ms); 42.845->42.937 (92 ms)
+  lon-nano  nt-popus-w   14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  lon-nano  nt-popus     16.871->17.169 (298 ms); 17.176->17.622 (446 ms); 42.845->42.937 (92 ms)
+  lon-view  nt-popus-h3  14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  lon-view  nt-popus-w   14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  lon-view  nt-popus     14.304->14.974 (670 ms); 17.137->17.827 (690 ms); 25.529->26.866 (1337 ms); 26.867->26.957 (90 ms); 48.295->48.630 (335 ms)
+  new-nano  nt-popus-h3  none
+  new-nano  nt-popus-w   18.581->18.644 (64 ms); 18.699->18.800 (102 ms); 34.984->35.035 (51 ms); 64.040->64.105 (65 ms)
+  new-nano  nt-popus     none
+  new-view  nt-popus-h3  none
+  new-view  nt-popus-w   none
+  new-view  nt-popus     none
+  syd-nano  nt-popus-h3  15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  syd-nano  nt-popus-w   23.813->23.980 (168 ms); 45.353->45.505 (152 ms)
+  syd-nano  nt-popus     15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  syd-view  nt-popus-h3  15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  syd-view  nt-popus-w   23.813->23.980 (168 ms); 45.353->45.505 (152 ms)
+  syd-view  nt-popus     15.761->15.828 (67 ms); 18.324->18.394 (70 ms); 20.507->20.591 (84 ms)
+  tok-nano  nt-popus-h3  46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-nano  nt-popus-w   46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-nano  nt-popus     46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-view  nt-popus-h3  29.050->29.108 (58 ms); 43.302->43.488 (187 ms)
+  tok-view  nt-popus-w   46.348->46.836 (488 ms); 56.500->56.648 (148 ms); 71.427->71.552 (125 ms)
+  tok-view  nt-popus     29.050->29.108 (58 ms); 43.302->43.488 (187 ms)

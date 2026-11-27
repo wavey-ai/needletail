@@ -3,6 +3,11 @@
 This document summarizes the latest global test and the accepted Needletail performance results.
 The dated test records contain the complete setup, revisions, gates, and evidence.
 
+These results were measured with 5 ms parts.
+Parts are now the smallest frame by default: 2.5 ms Opus, 1 ms lossless PCM, one video frame.
+A reader that asks for each part then sends two to five times the requests of a 5 ms reader.
+Reader counts per edge in this document are 5 ms figures and must be measured again at the new default.
+
 ## Terms
 
 An H3 response is one media response over HTTP/3.
@@ -34,6 +39,39 @@ This run is the current global audio record.
 It does not replace the accepted results for different workloads below.
 
 See the [global multitrack FLAC audio record](../real-world-tests/2026-07-28-global-multitrack-audio.md).
+
+## Small instances and the private-subnet fabric
+
+The November 19 series ran the audio mesh on 27 Linode Nanodes in four regions.
+Each node had one shared vCPU and 1 GB of memory.
+Two distributors in each region fed three LL-HLS edges over a private VLAN.
+
+The source was the Lori Asha `WESTSIDE` mix as 48 kHz, 24-bit stereo FLAC in 5 ms units.
+
+| City | Raw UDP p50 | Edge LL-HLS p50 | Edge LL-HLS p99 |
+| --- | ---: | ---: | ---: |
+| London | 2.9 ms | 5.0 ms | 6.4 ms |
+| New York | 33.7 ms | 36.0 ms | 37.7 ms |
+| Tokyo | 108.0 ms | 110.1 ms | 112.1 ms |
+| Sydney | 127.5 ms | 129.4 ms | 175.0 ms |
+
+The 60-second global run delivered 576,000 of 576,000 units with zero integrity mismatches.
+A primary relay failover delivered 432,000 of 432,000 units with zero deadline misses.
+Two hundred concurrent lossless readers received 1,200,000 of 1,200,000 parts.
+
+The strict series result is `FAIL`.
+The 10-minute soak passed in London and New York.
+It had missing epochs at two distributors and late parts in Tokyo and Sydney.
+
+One missing part at a distributor stops its cache-mesh push for 48 seconds.
+The catch-up burst then overflows the edge receive buffers.
+This defect is the first gap to close for the private-subnet fabric.
+
+One Nanode edge is qualified for 25 lossless readers with single 5 ms responses.
+One stereo programme with FLAC and Opus is the qualified load for the all-Nanode profile.
+Backbone transfer costs more than the instances: 54 GB per hour for eight distributors.
+
+See the [small-instance Linode record](../real-world-tests/2026-11-19-linode-small-instance-mesh.md).
 
 ## Response duration
 
@@ -180,6 +218,7 @@ Native playback remains a separate conformance check on a supported browser.
 
 ## Evidence
 
+- [Small-instance Linode mesh](../real-world-tests/2026-11-19-linode-small-instance-mesh.md)
 - [Global multitrack FLAC audio](../real-world-tests/2026-07-28-global-multitrack-audio.md)
 - [Matched Opus response duration](../real-world-tests/2026-07-21-opus-h3-response-duration.md)
 - [4K capacity and loaded player](../real-world-tests/2026-07-21-h264-4k-capacity-and-player.md)

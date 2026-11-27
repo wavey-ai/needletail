@@ -1,0 +1,592 @@
+{
+  "schema": "needletail.scale.phases.v1",
+  "description": "The proving run of the resilient mesh on Linode, its changes (deploy/low-latency/SCALE.md \"The proving run\", step 6), on deploy/low-latency/topology-proving.json (three serving edges and one standby a region, two forwarders and a dist-c slot, two contributors, a view and a nano probe host a region). Two real runs of each change, not ten (the 10-of-10 gate is the local proof's): group C1 is run 1 (F1 the faults and the autoscaler's verbs, R1 the rolls from set a to set b), group C2 run 2 (F2 the faults on other nodes and a slot edge joining, R2 the rolls back to set a). Each scenario is ONE shared probe (\"probe\": \"shared\"): its changes one after another, each its own label (span_s: the label's planned length, holds included), at least 30 s apart once widened by the referee's 2 s and 5 s, and the probe run on until every label's length has 150 no-change windows outside every label (scale-run shared_probe_tail). Scored by the referee's change-window.py WITH its shared-probe patch (.resilient/reports/proving-change-window-shared-probe.patch: each label's null taken outside every label of the probe); without it a shared probe is not sound. Probes on opus-1 and pcm-1 (probe_configs) on every view and nano host; the crowd 480 listeners (120 a region, two paths). scale-run.py run --phase-plan deploy/low-latency/phases-proving.json --group C1 --name prove-c1 --budget-usd 100 --spent-before-usd 63.48 --next-av-mesh-root <set b av-mesh> --next-av-contrib-root <set b av-contrib>; then --group C2 --name prove-c2. C1 65.0 minutes, C2 52.0 (scale-run plan --topology-only), within the one lab: up creates 45 nodes at $3.834 an hour (53 at $4.266 with every slot; ceilings NEEDLETAIL_LINODE_MAX_NODES=53 and NEEDLETAIL_LINODE_MAX_HOURLY_USD=4.30; London's first-hop forwarders on g6-dedicated-8 for their heavy egress at 247 Mbit/s), up to down about 4 h 15 min, 5 billed hours, $19.17 ($15.66 without Sydney), the watchdog at 5 h. A site the lab was made without is left out of the shared probes (its rolls). Engine timeouts on every gated command: gate 10 s, drain 15 s, readiness 30 s.",
+  "defaults": {
+    "config": "opus-1",
+    "probe_configs": "opus-1,pcm-1",
+    "listeners": 480,
+    "hls_share": 0.02,
+    "baseline_s": 60,
+    "observe_s": 60,
+    "settle_s": 30
+  },
+  "groups": {
+    "C1": {
+      "listeners": 480
+    },
+    "C2": {
+      "listeners": 480
+    }
+  },
+  "scenarios": [
+    {
+      "name": "F1",
+      "group": "C1",
+      "probe": "shared",
+      "title": "faults, run 1, one probe: drain and resume lon-edge-1; kill lon-edge-2 and start it 20 s later; kill the forwarder tok-dist-a and start it; the ingress lon-dist-a killed and returned (A's kill, held down, and return); contrib-lon killed and returned (the standby contrib-lon-b carries the stream); the autoscaler's scale up London (the standby edge lon-edge-4 joins), scale up again (no standby left: the slot lon-edge-5 is created, the one real create), and scale down twice (the warm pool keeps the drained slot stopped)",
+      "actions": [
+        {
+          "kind": "drain",
+          "targets": [
+            "lon-edge-1"
+          ],
+          "span_s": 20,
+          "at_s": 0
+        },
+        {
+          "kind": "resume",
+          "targets": [
+            "lon-edge-1"
+          ],
+          "span_s": 32,
+          "label_hold_s": 30,
+          "at_s": 60
+        },
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-edge-2"
+          ],
+          "span_s": 70,
+          "label_hold_s": 30,
+          "at_s": 135
+        },
+        {
+          "kind": "start",
+          "targets": [
+            "lon-edge-2"
+          ],
+          "span_s": 0,
+          "at_s": 155
+        },
+        {
+          "kind": "kill",
+          "targets": [
+            "tok-dist-a"
+          ],
+          "span_s": 80,
+          "label_hold_s": 30,
+          "at_s": 245
+        },
+        {
+          "kind": "start",
+          "targets": [
+            "tok-dist-a"
+          ],
+          "span_s": 0,
+          "at_s": 265
+        },
+        {
+          "kind": "change",
+          "change": "kill",
+          "targets": [
+            "lon-dist-a"
+          ],
+          "span_s": 25,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 365
+        },
+        {
+          "kind": "change",
+          "change": "return",
+          "targets": [
+            "lon-dist-a"
+          ],
+          "span_s": 75,
+          "label_hold_s": 30,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 430
+        },
+        {
+          "kind": "change",
+          "change": "kill",
+          "targets": [
+            "contrib-lon"
+          ],
+          "span_s": 25,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 545
+        },
+        {
+          "kind": "change",
+          "change": "return",
+          "targets": [
+            "contrib-lon"
+          ],
+          "span_s": 75,
+          "label_hold_s": 30,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 610
+        },
+        {
+          "kind": "scale",
+          "direction": "up",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 90,
+          "label": "scale.up.london.standby",
+          "at_s": 725
+        },
+        {
+          "kind": "scale",
+          "direction": "up",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 480,
+          "label": "scale.up.london.create",
+          "at_s": 855
+        },
+        {
+          "kind": "scale",
+          "direction": "down",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 60,
+          "label": "scale.down.london.1",
+          "at_s": 1375
+        },
+        {
+          "kind": "scale",
+          "direction": "down",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 60,
+          "label": "scale.down.london.2",
+          "at_s": 1475
+        }
+      ],
+      "expect": {},
+      "note": "Each action is its own label (scale-run labels a plain kind <scenario>.<kind>.<node>, a command its own or the action's `label`); a kill's label runs until its node is back, ready and 30 s more (label_hold_s), a resume's and a return's 30 s past their end: the moves back to the node are the change's. The real create's label is the scale verb's: from the decision to the slot serving (creation, bootstrap, the warm pass and the join), which is why this probe's tail is long."
+    },
+    {
+      "name": "R1",
+      "group": "C1",
+      "probe": "shared",
+      "title": "rolls, run 1, one probe: every edge, then every forwarder, region by region, then both contributors, from set a to set b (the same sources built twice with different build ids: --next-av-mesh-root, --next-av-contrib-root); one label a region and tier",
+      "actions": [
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "next",
+          "sites": [
+            "london"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.london",
+          "at_s": 0,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "next",
+          "sites": [
+            "newyork"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.newyork",
+          "at_s": 160,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "next",
+          "sites": [
+            "tokyo"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.tokyo",
+          "at_s": 320,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "next",
+          "sites": [
+            "sydney"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.sydney",
+          "at_s": 480,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "next",
+          "sites": [
+            "london"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.london",
+          "at_s": 640,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "next",
+          "sites": [
+            "newyork"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.newyork",
+          "at_s": 750,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "next",
+          "sites": [
+            "tokyo"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.tokyo",
+          "at_s": 860,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "next",
+          "sites": [
+            "sydney"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.sydney",
+          "at_s": 970,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "contributors",
+          "build": "next",
+          "span_s": 90,
+          "label": "upgrade.contributors",
+          "at_s": 1080,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "every node on set b's build id after the roll",
+          "needs": "the nodes' /api/node build beside set b's id (scale-run judges one build after the change)"
+        }
+      ]
+    },
+    {
+      "name": "F2",
+      "group": "C2",
+      "probe": "shared",
+      "title": "faults, run 2, one probe, other nodes: drain and resume lon-edge-3; kill lon-edge-1 and start it; kill the forwarder new-dist-b and start it; the ingress lon-dist-b killed and returned; contrib-lon killed and returned; scale up London (the standby lon-edge-4), scale up again (the slot lon-edge-5 out of the warm pool: a slot edge joining), scale down twice",
+      "actions": [
+        {
+          "kind": "drain",
+          "targets": [
+            "lon-edge-3"
+          ],
+          "span_s": 20,
+          "at_s": 0
+        },
+        {
+          "kind": "resume",
+          "targets": [
+            "lon-edge-3"
+          ],
+          "span_s": 32,
+          "label_hold_s": 30,
+          "at_s": 60
+        },
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-edge-1"
+          ],
+          "span_s": 70,
+          "label_hold_s": 30,
+          "at_s": 135
+        },
+        {
+          "kind": "start",
+          "targets": [
+            "lon-edge-1"
+          ],
+          "span_s": 0,
+          "at_s": 155
+        },
+        {
+          "kind": "kill",
+          "targets": [
+            "new-dist-b"
+          ],
+          "span_s": 80,
+          "label_hold_s": 30,
+          "at_s": 245
+        },
+        {
+          "kind": "start",
+          "targets": [
+            "new-dist-b"
+          ],
+          "span_s": 0,
+          "at_s": 265
+        },
+        {
+          "kind": "change",
+          "change": "kill",
+          "targets": [
+            "lon-dist-b"
+          ],
+          "span_s": 25,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 365
+        },
+        {
+          "kind": "change",
+          "change": "return",
+          "targets": [
+            "lon-dist-b"
+          ],
+          "span_s": 75,
+          "label_hold_s": 30,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 430
+        },
+        {
+          "kind": "change",
+          "change": "kill",
+          "targets": [
+            "contrib-lon"
+          ],
+          "span_s": 25,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 545
+        },
+        {
+          "kind": "change",
+          "change": "return",
+          "targets": [
+            "contrib-lon"
+          ],
+          "span_s": 75,
+          "label_hold_s": 30,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30,
+          "at_s": 610
+        },
+        {
+          "kind": "scale",
+          "direction": "up",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 90,
+          "label": "scale.up.london.standby",
+          "at_s": 725
+        },
+        {
+          "kind": "scale",
+          "direction": "up",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 90,
+          "label": "scale.up.london.slot",
+          "at_s": 855
+        },
+        {
+          "kind": "scale",
+          "direction": "down",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 60,
+          "label": "scale.down.london.1",
+          "at_s": 985
+        },
+        {
+          "kind": "scale",
+          "direction": "down",
+          "site": "london",
+          "tier": "edges",
+          "span_s": 60,
+          "label": "scale.down.london.2",
+          "at_s": 1085
+        }
+      ],
+      "expect": {}
+    },
+    {
+      "name": "R2",
+      "group": "C2",
+      "probe": "shared",
+      "title": "rolls, run 2, one probe: every edge, every forwarder, region by region, then both contributors, from set b back to set a",
+      "actions": [
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "first",
+          "sites": [
+            "london"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.london",
+          "at_s": 0,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "first",
+          "sites": [
+            "newyork"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.newyork",
+          "at_s": 160,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "first",
+          "sites": [
+            "tokyo"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.tokyo",
+          "at_s": 320,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "edges",
+          "build": "first",
+          "sites": [
+            "sydney"
+          ],
+          "span_s": 120,
+          "label": "upgrade.edges.sydney",
+          "at_s": 480,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "first",
+          "sites": [
+            "london"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.london",
+          "at_s": 640,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "first",
+          "sites": [
+            "newyork"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.newyork",
+          "at_s": 750,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "first",
+          "sites": [
+            "tokyo"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.tokyo",
+          "at_s": 860,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "forwarders",
+          "build": "first",
+          "sites": [
+            "sydney"
+          ],
+          "span_s": 70,
+          "label": "upgrade.forwarders.sydney",
+          "at_s": 970,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        },
+        {
+          "kind": "upgrade",
+          "tier": "contributors",
+          "build": "first",
+          "span_s": 90,
+          "label": "upgrade.contributors",
+          "at_s": 1080,
+          "gate_timeout_s": 10,
+          "drain_timeout_s": 15,
+          "ready_timeout_s": 30
+        }
+      ],
+      "expect": {},
+      "open": [
+        {
+          "criterion": "every node on set a's build id after the roll",
+          "needs": "the nodes' /api/node build beside set a's id"
+        }
+      ]
+    }
+  ]
+}

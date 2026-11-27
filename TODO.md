@@ -211,6 +211,92 @@ Needletail media nodes remain native `systemd` services on Rocky Linux. Do not
 add k3s unless a measured operational requirement outweighs its control-plane,
 networking, and upgrade overhead.
 
+## P0 — regional LL-HLS cache features
+
+The design is [`docs/edge-cache-fabric.md`](docs/edge-cache-fabric.md). The
+record is
+[`docs/real-world-tests/2026-11-19-regional-llhls-cache-features.md`](docs/real-world-tests/2026-11-19-regional-llhls-cache-features.md).
+The work is on branch `regional-llhls-cache` of `needletail`, `av-mesh` and
+`playlists`. None of it is merged to `main`.
+
+- [x] Replicate a playlist to an edge only while the edge has readers, with a
+  bounded and paced warm-up, and release it when the readers have gone.
+- [x] Render the playlist of the distributor at an edge: part durations,
+  independent parts, segment boundaries, program date and time.
+- [x] Keep a time window of each playlist, so that one small node holds 5 ms
+  audio parts and 4K video.
+- [x] Admit a reader against the bit rate of its playlist and a reader limit.
+- [x] Assign readers to caches from every node of a region, without shared
+  state: by holder, load and session. Sticky for a session.
+- [x] Move the readers of a drained, failed or stalled cache without a missing
+  part.
+- [x] Pin a reader to a named cache.
+- [x] Demonstrate each feature for 4K video and lossless audio on one host and
+  on Linode Nanodes.
+- [x] Stamp the segment number on each part at the contributor, so that every
+  cache serves the same playlist.
+- [x] Give the contributor a part duration for each track.
+- [x] Run the local lab with `tc netem`: `scripts/edge_lab.py` and
+  `scripts/edge-campaign.py`.
+- [x] Name caches that start after a session began, with Content Steering
+  pathway clones. Keep a standby copy of a playlist that has readers.
+- [x] Run the pushed branches and HQ SoundKit Opus on Linode: the edge
+  campaign of 21 November.
+- [ ] Limit the warm-up of an audio copy to the seconds that a reader needs.
+- [ ] Run the edge lifecycle controller with demand replication: provision an
+  edge when a region refuses readers.
+- [ ] Rebase `av-mesh` `regional-llhls-cache` when `edge-hole-repair` and
+  `fix-media-fec-ingest-test` are merged. It contains both.
+
+## P0 — edge hardening
+
+The record is
+[`docs/real-world-tests/2026-11-21-edge-hardening.md`](docs/real-world-tests/2026-11-21-edge-hardening.md).
+The ranked gap list is [`docs/media-edge-gaps.md`](docs/media-edge-gaps.md).
+The work is on `regional-llhls-cache` of `needletail`, `av-mesh` and
+`playlists`, and on `edge-hardening` of `av-contrib`.
+
+- [x] A repeatable fault campaign on one host and on Linode, with evidence for
+  each scenario.
+- [x] Check playlists against the LL-HLS rules, and play with hls.js and
+  ffmpeg.
+- [x] Content Steering that survives a cache failure; a pathway in the
+  neighbouring region; a ladder of renditions; admission by request cost.
+- [x] Refuse a stream on a full node; answer 503 from an edge that has lost
+  its parents; judge the age of an advertisement by receipt; kernel fragment
+  settings and allocator settings on every node.
+- [x] Push the five branches (`regional-llhls-cache` of `needletail`,
+  `av-mesh` and `playlists`; `edge-hardening` of `av-contrib`;
+  `bounded-sequence-tracker` of `raptor-fec`). None is merged to `main`.
+- [ ] Build `av-mesh` and `av-contrib` with their git dependencies fetched
+  from GitHub. The round built them from the local checkouts.
+- [ ] Release `raptorq-datagram-fec` with the bounded sequence tracker and
+  `wavey-boxer` 0.1.1, and go back to registry versions.
+- [ ] Carry the deadline of a relay object as an age, not as a time of day.
+  Until then a relay or a distributor whose clock is more than
+  `--relay-deadline-ms` ahead of the contributor drops every object. Refuse to
+  start a node without a synchronised clock.
+- [ ] Work through the open items at the end of `docs/media-edge-gaps.md`:
+  bursts of loss on the cache network, a copy that warms on a lossy link,
+  over-admission through alternates, CPU steal, the audio lane under a skewed
+  distributor clock, the backlog of a contributor after a freeze, memory of
+  relays and distributors with many streams.
+- [ ] Run the churn scenario for a day on real instances. The memory fixes
+  are measured over 90 minutes in the local lab.
+- [ ] Two `av-contrib` tests of `audio_epoch_hls` fail on `412014d` and after;
+  two tests of `raptor-fec` `tests/video_loss_matrix.rs` time out on `main`.
+- [ ] Make hls.js hold a ladder at one-second latency on a link with little
+  headroom: a cheaper first variant, `EXT-X-START`, CMSD hints.
+- [ ] Signal a part that is lost for good: `GAP=YES` and `EXT-X-GAP`.
+- [ ] Serve audio parts in groups, as a second view of the same playlist, for
+  standard players and narrow uplinks. Audio as its own rendition group.
+- [ ] Authorise viewers with a signed token. Move the control paths off the
+  playback port.
+- [ ] Two contributors for one stream, and `EXT-X-DISCONTINUITY` on a restart.
+- [ ] DNS names and certificates for caches. Playlists name caches by address.
+- [ ] Delta updates, `Priority` headers and `Alt-Svc`.
+- [ ] Parse CMCD and export viewer-side quality for each cache and stream.
+
 ## P1 — player and media delivery
 
 - [ ] Change the owning playlist service to advertise the registered

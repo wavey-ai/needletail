@@ -1,0 +1,1352 @@
+{
+ "evidence": "/tmp/claude-1000/-home-jamieb-wavey-ai/af7b1923-cdea-4f1f-8582-6ad64db99bb0/scratchpad/w7-v15.json",
+ "sessions": "waudio7,waudio7-std",
+ "needletail_lane": "nt-uc",
+ "livekit_lane": "lkregion",
+ "rows": [
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "London",
+   "needletail": 2.54,
+   "livekit": 4.98,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "New York",
+   "needletail": 33.08,
+   "livekit": 35.61,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Tokyo",
+   "needletail": 111.05,
+   "livekit": 110.27,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Sydney",
+   "needletail": 127.81,
+   "livekit": 130.57,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "London",
+   "needletail": 658.16,
+   "livekit": 1457.55,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "New York",
+   "needletail": 37.41,
+   "livekit": 39.14,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Tokyo",
+   "needletail": 113.96,
+   "livekit": 112.14,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Sydney",
+   "needletail": 191.18,
+   "livekit": 134.07,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 0.9624,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 0.9997,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 0.9623,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 1.054,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 4.7352,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 4.7454,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 4.8464,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 5.2207,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 5.1471,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 5.1727,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 5.1107,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 4.9976,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "London",
+   "needletail": 694.95,
+   "livekit": 7.5,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "New York",
+   "needletail": 38.85,
+   "livekit": 37.58,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "Tokyo",
+   "needletail": 113.58,
+   "livekit": 112.39,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "Sydney",
+   "needletail": 134.26,
+   "livekit": 136.31,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "London",
+   "needletail": 12.8,
+   "livekit": 159.45,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "New York",
+   "needletail": 10.67,
+   "livekit": 160.49,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "Tokyo",
+   "needletail": 12.02,
+   "livekit": 160.0,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "Sydney",
+   "needletail": 24.49,
+   "livekit": 164.98,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "London",
+   "needletail": 1.51,
+   "livekit": 2.7,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "New York",
+   "needletail": 32.04,
+   "livekit": 38.54,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Tokyo",
+   "needletail": 105.99,
+   "livekit": 110.35,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Sydney",
+   "needletail": 128.99,
+   "livekit": 17775.7,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "London",
+   "needletail": 3.76,
+   "livekit": 4.81,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "New York",
+   "needletail": 34.09,
+   "livekit": 40.98,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Tokyo",
+   "needletail": 109.44,
+   "livekit": 986.55,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Sydney",
+   "needletail": 133.66,
+   "livekit": 27525.01,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 1.0196,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 1.0292,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 1.0197,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 1.4023,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "London",
+   "needletail": 3.4049,
+   "livekit": 4.7646,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 5.0207,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 4.8563,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 5.7818,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 5.1382,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 5.3403,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 4.9129,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 6.1295,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "London",
+   "needletail": 587.07,
+   "livekit": 5.35,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "New York",
+   "needletail": 34.5,
+   "livekit": 40.81,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "Tokyo",
+   "needletail": 109.86,
+   "livekit": 110.78,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "Sydney",
+   "needletail": 133.09,
+   "livekit": 60458.35,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "London",
+   "needletail": 14.41,
+   "livekit": 29.94,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "New York",
+   "needletail": 13.86,
+   "livekit": 26.14,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "Tokyo",
+   "needletail": 13.3,
+   "livekit": 25.54,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7",
+   "config": "pcm",
+   "rendition": "PCM 48 kHz/24-bit (Needletail 1 ms parts; LiveKit 2.5 ms data packets)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "Sydney",
+   "needletail": 21.45,
+   "livekit": 104.75,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "London",
+   "needletail": 5.2,
+   "livekit": 5.27,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "New York",
+   "needletail": 35.45,
+   "livekit": 40.76,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Tokyo",
+   "needletail": 109.45,
+   "livekit": 109.56,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Sydney",
+   "needletail": 132.22,
+   "livekit": 132.25,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "tie",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "London",
+   "needletail": 6.57,
+   "livekit": 6.95,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "New York",
+   "needletail": 40.48,
+   "livekit": 44.89,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Tokyo",
+   "needletail": 111.2,
+   "livekit": 111.25,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "tie",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Sydney",
+   "needletail": 134.64,
+   "livekit": 134.72,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 1.0651,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 1.0745,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 0.9434,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss1",
+   "label": "Units missing at 1% loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 0.8885,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 5.1411,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 4.5382,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 4.9575,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_loss5",
+   "label": "Units missing at 5% loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 4.8679,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "London",
+   "needletail": 0.0,
+   "livekit": 5.5311,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "New York",
+   "needletail": 0.0,
+   "livekit": 4.9822,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "Tokyo",
+   "needletail": 0.0,
+   "livekit": 5.3723,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "missing_burst",
+   "label": "Units missing under burst loss (%)",
+   "region": "Sydney",
+   "needletail": 0.0,
+   "livekit": 5.4367,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 2
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "London",
+   "needletail": 7.61,
+   "livekit": 7.19,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "New York",
+   "needletail": 38.62,
+   "livekit": 49.78,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "Tokyo",
+   "needletail": 111.19,
+   "livekit": 111.28,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "m2e_p99_loss5",
+   "label": "Mouth to ear, p99 at 5% loss (ms)",
+   "region": "Sydney",
+   "needletail": 135.45,
+   "livekit": 134.93,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "loss",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "London",
+   "needletail": 11.37,
+   "livekit": 159.39,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "New York",
+   "needletail": 10.08,
+   "livekit": 159.74,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "Tokyo",
+   "needletail": 10.14,
+   "livekit": 159.03,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 0
+  },
+  {
+   "session": "waudio7-std",
+   "config": "opus-2.5",
+   "rendition": "Opus 2.5 ms, standard (both)",
+   "metric": "first_audio",
+   "label": "Time to first audio, new listener, median (ms)",
+   "region": "Sydney",
+   "needletail": 12.38,
+   "livekit": 160.34,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 0
+  }
+ ]
+}

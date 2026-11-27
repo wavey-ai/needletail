@@ -1,0 +1,264 @@
+{
+ "evidence": "docs/real-world-tests/evidence/20261122-compare-audio.json",
+ "sessions": "waudio7-pin,waudio7-unpin",
+ "needletail_lane": "nt-uc",
+ "livekit_lane": "lkregion",
+ "rows": [
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "London",
+   "needletail": 2.83,
+   "livekit": 5.27,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "New York",
+   "needletail": 33.24,
+   "livekit": 35.64,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Tokyo",
+   "needletail": 108.7,
+   "livekit": 114.11,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Sydney",
+   "needletail": 130.11,
+   "livekit": 132.72,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "London",
+   "needletail": 5.15,
+   "livekit": 7.22,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "New York",
+   "needletail": 35.36,
+   "livekit": 38.49,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Tokyo",
+   "needletail": 111.84,
+   "livekit": 115.77,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-pin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Sydney",
+   "needletail": 133.63,
+   "livekit": 138.32,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "London",
+   "needletail": 2.79,
+   "livekit": 5.23,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "New York",
+   "needletail": 33.22,
+   "livekit": 35.65,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Tokyo",
+   "needletail": 107.32,
+   "livekit": 110.7,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p50",
+   "label": "Mouth to ear, median (ms)",
+   "region": "Sydney",
+   "needletail": 130.12,
+   "livekit": 132.6,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "London",
+   "needletail": 5.2,
+   "livekit": 7.32,
+   "hosts": [
+    "lon-view",
+    "lon-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "New York",
+   "needletail": 37.0,
+   "livekit": 41.26,
+   "hosts": [
+    "new-view",
+    "new-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Tokyo",
+   "needletail": 109.95,
+   "livekit": 112.42,
+   "hosts": [
+    "tok-view",
+    "tok-view"
+   ],
+   "result": "win",
+   "digits": 1
+  },
+  {
+   "session": "waudio7-unpin",
+   "config": "opus-2.5",
+   "rendition": "Opus, smallest frame (Needletail 1 ms Opus Custom; LiveKit 2.5 ms)",
+   "metric": "m2e_p99",
+   "label": "Mouth to ear, p99 (ms)",
+   "region": "Sydney",
+   "needletail": 134.84,
+   "livekit": 137.56,
+   "hosts": [
+    "syd-view",
+    "syd-view"
+   ],
+   "result": "win",
+   "digits": 1
+  }
+ ]
+}

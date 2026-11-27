@@ -1,0 +1,1409 @@
+{
+  "schema": "needletail.regional-llhls-cache-features.v1",
+  "run_id": "20261119T200101Z-regional-cache",
+  "provider": "linode",
+  "date_utc": "2026-11-19",
+  "raw_artifact_directory": "target/linode-qualification/small-mesh-runs/20261119T200101Z-regional-cache",
+  "passed": true,
+  "result": "every demonstration passed at the final settings",
+  "lab": {
+    "lab_run_id": "11191958",
+    "topology": "deploy/linode-small-mesh/topology-regional-cache.json",
+    "nodes": 15,
+    "mesh_node_type": "g6-nanode-1",
+    "london_reader_host_type": "g6-dedicated-4",
+    "new_york_reader_host_type": "g6-nanode-1",
+    "regions": [
+      "gb-lon",
+      "nl-ams",
+      "us-east"
+    ],
+    "hourly_usd": 0.213,
+    "lab_hours": 0.43,
+    "instance_cost_usd": 0.21,
+    "roles": {
+      "contributor": 1,
+      "backbone": 2,
+      "distributor": 4,
+      "edge": 6,
+      "load": 2
+    },
+    "distributors_and_relays_on_distinct_hosts": true,
+    "slow_shared_nodes": 0,
+    "largest_clock_offset_ms": 0.28
+  },
+  "revisions": {
+    "av_mesh": "8ba7a08 on branch regional-llhls-cache before it was rewritten for review",
+    "playlists": "c246a40",
+    "needletail": "working tree of branch regional-llhls-cache",
+    "av_mesh_binary_sha256": "9da8cdfcb69144ebd296b56ed122b6c35787531f880aeafd7d2b4c2ee2bc3222",
+    "needletail_reader_binary_sha256": "6932bf0cddb2e48b5446a03ab67c477a526a188ac185a74a6781b1d59906b653",
+    "av_contrib": "build of 14:36 UTC from branch probe-soundkit-opus-plain without the RTMP AAC correction; the video source sent no audio track",
+    "web_services": "c872305",
+    "pushed_branches": {
+      "av_mesh": "regional-llhls-cache at a9cb1dd",
+      "playlists": "regional-llhls-cache at 151eaee",
+      "needletail": "regional-llhls-cache"
+    }
+  },
+  "revision_notes": [
+    "Seven changes were made after the lab was deleted and are not in the tested binary: a released copy frees its parts; a new stream takes a free cache index; a part is listed in a playlist only when its entry is recorded; an entry point assigns a new reader only to a cache with room for the bit rate of its playlist; the bit rate of a playlist is measured over at least four seconds; a new copy admits its first readers against the bit rate that the region advertises; an edge holds at most 15 playlists. They are covered by unit tests and the local lab.",
+    "The default warm-up rate became 20 Mbit/s after the run. The run set it with a deploy setting."
+  ],
+  "source_material": {
+    "video": "tos24-16m.ts: Tears of Steel, H.264 High 3840x2160, 24 fps, 16.5 Mbit/s, two-second closed GOP, sent without its audio track over RTMP from the London reader host",
+    "audio": "Lori Asha confirmation mix, 48 kHz 24-bit stereo, lossless FLAC in 5 ms parts, stream 2001",
+    "video_stream_id": 1,
+    "audio_stream_id": 2001,
+    "video_part": "one frame, 41.7 ms",
+    "audio_part_ms": 5
+  },
+  "settings": {
+    "part_ms": 5,
+    "parts_per_segment": 200,
+    "window_parts": 2400,
+    "fmp4_part_ms": 5,
+    "mesh_sync_interval_ms": 2,
+    "mesh_symbol_size": 900,
+    "mesh_max_symbol_size": 16000,
+    "telemetry_interval_ms": 500,
+    "playback_address": "vlan",
+    "cache_mesh_replication": "demand",
+    "cache_mesh_demand_idle_ms": 8000,
+    "cache_mesh_lease_ms": 3000,
+    "cache_mesh_warm_kbps": 20000,
+    "edge_egress_capacity_bps": 100000000,
+    "steering_ttl_seconds": 1,
+    "extra_edge_args": [
+      "--egress-session-idle-seconds",
+      "10"
+    ],
+    "extra_distributor_args": [
+      "--udp-socket-buffer-bytes",
+      "2097152"
+    ]
+  },
+  "settings_note": "cache_mesh_warm_kbps was 50000 for the first invocations and 20000 from the third invocation of the region demonstration onward",
+  "invocations": [
+    {
+      "order": 1,
+      "demonstrations": [
+        "replicate"
+      ],
+      "warm_kbps": 50000,
+      "result": "pass"
+    },
+    {
+      "order": 2,
+      "demonstrations": [
+        "pin",
+        "steering",
+        "balance",
+        "failover",
+        "drain"
+      ],
+      "warm_kbps": 50000,
+      "result": "pass"
+    },
+    {
+      "order": 3,
+      "demonstrations": [
+        "stall",
+        "parent",
+        "region"
+      ],
+      "warm_kbps": 50000,
+      "result": "stall and parent passed; region failed: 206 underruns at three audio readers on new-edge-2, worst part 1,244 ms behind schedule, while the same edge warmed a 4K copy"
+    },
+    {
+      "order": 4,
+      "demonstrations": [
+        "region"
+      ],
+      "warm_kbps": 20000,
+      "result": "pass after the warm-up rate was lowered"
+    },
+    {
+      "order": 5,
+      "demonstrations": [
+        "replicate",
+        "pin",
+        "steering",
+        "balance",
+        "failover",
+        "drain",
+        "stall",
+        "parent",
+        "region"
+      ],
+      "warm_kbps": 20000,
+      "result": "all passed except one check of replicate, which compared segment numbers between an edge and a distributor"
+    },
+    {
+      "order": 6,
+      "demonstrations": [
+        "replicate"
+      ],
+      "warm_kbps": 20000,
+      "result": "pass with the check corrected to compare segment boundaries and program time"
+    },
+    {
+      "order": 7,
+      "demonstrations": [
+        "symbol size comparison"
+      ],
+      "warm_kbps": 20000,
+      "result": "measured"
+    }
+  ],
+  "demonstrations": {
+    "replicate": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "no edge holds a playlist before a reader arrives",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the distributors push nothing to the edges",
+          "pass": true,
+          "detail": "0 subscriptions"
+        },
+        {
+          "check": "lon-edge-1 holds only the 4K playlist",
+          "pass": true,
+          "detail": "[1]"
+        },
+        {
+          "check": "lon-edge-2 holds only the audio playlist",
+          "pass": true,
+          "detail": "[2001]"
+        },
+        {
+          "check": "the other edges hold nothing",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "each distributor serves exactly those two subscriptions",
+          "pass": true,
+          "detail": "{\"lon-dist-a\": 2, \"lon-dist-b\": 2}"
+        },
+        {
+          "check": "no New York edge holds a London reader's playlist",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the 4K reader received every part with no underrun",
+          "pass": true,
+          "detail": "337 parts, startup 28 ms"
+        },
+        {
+          "check": "the audio reader received every part with no underrun",
+          "pass": true,
+          "detail": "2800 parts, startup 9 ms"
+        },
+        {
+          "check": "the edge playlist marks independent parts and has a program date",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the edge and its distributor cut the same segments at the same program time",
+          "pass": true,
+          "detail": "3 segments in both playlists, largest difference 0.0 s"
+        },
+        {
+          "check": "every edge released its playlist after the readers left",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the distributors stopped pushing",
+          "pass": true,
+          "detail": "0 subscriptions"
+        }
+      ]
+    },
+    "pin": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "every entry point of the region gives the session the same caches",
+          "pass": true,
+          "detail": "[\"lon-edge-2\", \"lon-edge-1\", \"lon-edge-3\"]"
+        },
+        {
+          "check": "the assigned cache is a London edge",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "forty new sessions are spread over every edge",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 10, \"lon-edge-2\": 6, \"lon-edge-3\": 13, \"lon-edge-4\": 11}"
+        },
+        {
+          "check": "a reader pinned to lon-edge-4 is served only by lon-edge-4",
+          "pass": true,
+          "detail": "195 parts"
+        },
+        {
+          "check": "a reader pinned to lon-edge-3 is served only by lon-edge-3",
+          "pass": true,
+          "detail": "1601 parts"
+        },
+        {
+          "check": "the pinned Multivariant Playlist names only that cache",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "a cache of another region cannot be pinned from London",
+          "pass": true,
+          "detail": "HTTP 404"
+        },
+        {
+          "check": "the New York entry point assigns only New York caches",
+          "pass": true,
+          "detail": "[\"new-edge-2\", \"new-edge-1\"]"
+        },
+        {
+          "check": "the session gets the same cache when it asks again",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the Multivariant Playlist lists the assigned cache first, as a pathway",
+          "pass": true,
+          "detail": ""
+        }
+      ]
+    },
+    "steering": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "a reader that already uses a cache is kept on it",
+          "pass": true,
+          "detail": "[\"lon-edge-3\", \"lon-edge-2\", \"lon-edge-4\"]"
+        },
+        {
+          "check": "the manifest names its reload interval and reload address",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "after its cache drains the reader is steered to another cache",
+          "pass": true,
+          "detail": "[\"lon-edge-2\", \"lon-edge-4\", \"lon-edge-1\"]"
+        }
+      ]
+    },
+    "balance": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "16 4K readers were all served",
+          "pass": true,
+          "detail": "16 of 16"
+        },
+        {
+          "check": "no reader had an underrun or a missing part",
+          "pass": true,
+          "detail": "max behind 96 ms"
+        },
+        {
+          "check": "no edge was loaded beyond its admission limit",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 70.8, \"lon-edge-2\": 80.9, \"lon-edge-3\": 61.7, \"lon-edge-4\": 67.7}"
+        },
+        {
+          "check": "no edge was idle while another was full",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 4, \"lon-edge-2\": 5, \"lon-edge-3\": 3, \"lon-edge-4\": 4}"
+        },
+        {
+          "check": "a copy was added on every edge as demand grew",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the region admitted what fits and refused the rest",
+          "pass": true,
+          "detail": "19 of 24 served"
+        },
+        {
+          "check": "every admitted reader played without an underrun",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "every edge stayed at or below its admission limit",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 78.0, \"lon-edge-2\": 83.4, \"lon-edge-3\": 83.7, \"lon-edge-4\": 83.9}"
+        }
+      ]
+    },
+    "failover-video": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "the failed cache (lon-edge-2) had readers",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 1, \"lon-edge-2\": 3, \"lon-edge-3\": 1, \"lon-edge-4\": 1}"
+        },
+        {
+          "check": "every reader of the failed cache moved to another cache",
+          "pass": true,
+          "detail": "3 readers moved"
+        },
+        {
+          "check": "every reader kept playing: no part missing",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "no reader had an underrun with a 1 s buffer",
+          "pass": true,
+          "detail": "worst part 80 ms behind schedule"
+        },
+        {
+          "check": "readers of the other caches were not moved",
+          "pass": true,
+          "detail": "3 readers stayed"
+        },
+        {
+          "check": "the part sequence is continuous across the move",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the entry point stopped assigning the failed cache",
+          "pass": true,
+          "detail": "[\"lon-edge-1\", \"lon-edge-4\", \"lon-edge-3\"]"
+        }
+      ]
+    },
+    "failover-audio": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "the failed cache (lon-edge-2) had readers",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 1, \"lon-edge-2\": 3, \"lon-edge-3\": 0, \"lon-edge-4\": 2}"
+        },
+        {
+          "check": "every reader of the failed cache moved to another cache",
+          "pass": true,
+          "detail": "3 readers moved"
+        },
+        {
+          "check": "every reader kept playing: no part missing",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "no reader had an underrun with a 1 s buffer",
+          "pass": true,
+          "detail": "worst part 15 ms behind schedule"
+        },
+        {
+          "check": "readers of the other caches were not moved",
+          "pass": true,
+          "detail": "3 readers stayed"
+        },
+        {
+          "check": "the part sequence is continuous across the move",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the entry point stopped assigning the failed cache",
+          "pass": true,
+          "detail": "[\"lon-edge-1\", \"lon-edge-4\", \"lon-edge-3\"]"
+        }
+      ]
+    },
+    "drain-video": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "the cache had the pinned readers",
+          "pass": true,
+          "detail": "4 sessions"
+        },
+        {
+          "check": "the draining cache advertises that it drains",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the entry point assigns no new reader to it",
+          "pass": true,
+          "detail": "[\"lon-edge-1\", \"lon-edge-2\", \"lon-edge-4\"]"
+        },
+        {
+          "check": "every reader left the draining cache",
+          "pass": true,
+          "detail": "{\"drain-video-0\": \"10.77.1.21:19444\", \"drain-video-1\": \"10.77.1.22:19444\", \"drain-video-2\": \"10.77.1.21:19444\"}"
+        },
+        {
+          "check": "each reader moved by a redirect of its playlist reload",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "no part was missing and no reader had an underrun",
+          "pass": true,
+          "detail": "worst part 0 ms behind schedule"
+        },
+        {
+          "check": "the part sequence is continuous across the move",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the steered reader ended on a cache that is not draining",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the drained cache has no reader of the playlist left",
+          "pass": true,
+          "detail": "0 sessions"
+        }
+      ]
+    },
+    "drain-audio": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "the cache had the pinned readers",
+          "pass": true,
+          "detail": "3 sessions"
+        },
+        {
+          "check": "the draining cache advertises that it drains",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the entry point assigns no new reader to it",
+          "pass": true,
+          "detail": "[\"lon-edge-2\", \"lon-edge-3\", \"lon-edge-1\"]"
+        },
+        {
+          "check": "every reader left the draining cache",
+          "pass": true,
+          "detail": "{\"drain-audio-0\": \"10.77.1.22:19444\", \"drain-audio-1\": \"10.77.1.22:19444\", \"drain-audio-2\": \"10.77.1.22:19444\"}"
+        },
+        {
+          "check": "each reader moved by a redirect of its playlist reload",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "no part was missing and no reader had an underrun",
+          "pass": true,
+          "detail": "worst part 28 ms behind schedule"
+        },
+        {
+          "check": "the part sequence is continuous across the move",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the steered reader ended on a cache that is not draining",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "the drained cache has no reader of the playlist left",
+          "pass": true,
+          "detail": "0 sessions"
+        }
+      ]
+    },
+    "stall": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "the stalled cache (lon-edge-1) had readers",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": 3, \"lon-edge-2\": 2, \"lon-edge-3\": 0, \"lon-edge-4\": 1}"
+        },
+        {
+          "check": "every reader of the stalled cache moved to another cache",
+          "pass": true,
+          "detail": "3 readers moved"
+        },
+        {
+          "check": "no part was missing and no reader had an underrun",
+          "pass": true,
+          "detail": "worst part 668 ms behind schedule"
+        },
+        {
+          "check": "the entry point stopped assigning the stalled cache",
+          "pass": true,
+          "detail": "[\"lon-edge-2\", \"lon-edge-3\", \"lon-edge-4\"]"
+        }
+      ]
+    },
+    "parent": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "every reader kept its cache",
+          "pass": true,
+          "detail": ""
+        },
+        {
+          "check": "no part was missing and no reader had an underrun",
+          "pass": true,
+          "detail": "worst part 504 ms behind schedule"
+        },
+        {
+          "check": "the other distributor served the subscriptions",
+          "pass": true,
+          "detail": "4 subscriptions"
+        },
+        {
+          "check": "the restarted distributor serves subscriptions again",
+          "pass": true,
+          "detail": "1 subscriptions"
+        }
+      ]
+    },
+    "region": {
+      "pass": true,
+      "checks": [
+        {
+          "check": "every New York reader was served by a New York cache",
+          "pass": true,
+          "detail": "[\"new-edge-1\", \"new-edge-2\"]"
+        },
+        {
+          "check": "no part was missing and no reader had an underrun",
+          "pass": true,
+          "detail": "worst part 67 ms behind schedule"
+        },
+        {
+          "check": "the New York edges hold the playlists that their readers need",
+          "pass": true,
+          "detail": "{\"new-edge-1\": [1], \"new-edge-2\": [1, 2001]}"
+        },
+        {
+          "check": "no London edge holds a playlist for a New York reader",
+          "pass": true,
+          "detail": "{\"lon-edge-1\": [], \"lon-edge-2\": [], \"lon-edge-3\": [], \"lon-edge-4\": []}"
+        }
+      ]
+    }
+  },
+  "reader_reports": {
+    "replicate-video": {
+      "readers": 1,
+      "readers_served": 1,
+      "parts_received": 337,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 31,
+      "cache_to_reader_latency_p50_ms": 0.64,
+      "cache_to_reader_latency_p99_worst_ms": 2.083,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        28,
+        28
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-1": 1
+      }
+    },
+    "replicate-audio": {
+      "readers": 1,
+      "readers_served": 1,
+      "parts_received": 2800,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 24,
+      "cache_to_reader_latency_p50_ms": -0.043,
+      "cache_to_reader_latency_p99_worst_ms": 1.471,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        9,
+        9
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-2": 1
+      }
+    },
+    "pin-video": {
+      "readers": 1,
+      "readers_served": 1,
+      "parts_received": 195,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 0,
+      "cache_to_reader_latency_p50_ms": 0.02,
+      "cache_to_reader_latency_p99_worst_ms": 4.542,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        28,
+        28
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-4": 1
+      }
+    },
+    "pin-audio": {
+      "readers": 1,
+      "readers_served": 1,
+      "parts_received": 1601,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 11,
+      "cache_to_reader_latency_p50_ms": 0.064,
+      "cache_to_reader_latency_p99_worst_ms": 0.604,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        14,
+        14
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-3": 1
+      }
+    },
+    "balance": {
+      "readers": 16,
+      "readers_served": 16,
+      "parts_received": 10023,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 96,
+      "cache_to_reader_latency_p50_ms": 0.649,
+      "cache_to_reader_latency_p99_worst_ms": 12.42,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        4,
+        14
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-1": 4,
+        "lon-edge-2": 5,
+        "lon-edge-3": 3,
+        "lon-edge-4": 4
+      }
+    },
+    "balance-surplus": {
+      "readers": 24,
+      "readers_served": 19,
+      "parts_received": 9173,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 101,
+      "cache_to_reader_latency_p50_ms": 0.641,
+      "cache_to_reader_latency_p99_worst_ms": 9.619,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        4,
+        52
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-1": 4,
+        "lon-edge-2": 5,
+        "lon-edge-3": 5,
+        "lon-edge-4": 5
+      }
+    },
+    "failover-video": {
+      "readers": 6,
+      "readers_served": 6,
+      "parts_received": 3748,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 80,
+      "cache_to_reader_latency_p50_ms": 0.474,
+      "cache_to_reader_latency_p99_worst_ms": 6.637,
+      "readers_moved": 3,
+      "longest_gap_between_parts_of_a_moved_reader_ms": 89,
+      "startup_ms": [
+        30,
+        54
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-1": 1,
+        "lon-edge-3": 3,
+        "lon-edge-4": 2
+      }
+    },
+    "failover-audio": {
+      "readers": 6,
+      "readers_served": 6,
+      "parts_received": 31194,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 15,
+      "cache_to_reader_latency_p50_ms": 0.391,
+      "cache_to_reader_latency_p99_worst_ms": 18.219,
+      "readers_moved": 3,
+      "longest_gap_between_parts_of_a_moved_reader_ms": 40,
+      "startup_ms": [
+        61,
+        118
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-1": 4,
+        "lon-edge-4": 2
+      }
+    },
+    "drain-video": {
+      "readers": 3,
+      "readers_served": 3,
+      "parts_received": 1590,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 0,
+      "cache_to_reader_latency_p50_ms": 0.771,
+      "cache_to_reader_latency_p99_worst_ms": 5.007,
+      "readers_moved": 3,
+      "longest_gap_between_parts_of_a_moved_reader_ms": 79,
+      "startup_ms": [
+        25,
+        26
+      ],
+      "readers_by_final_cache": {
+        "10.77.1.21:19444": 2,
+        "10.77.1.22:19444": 1
+      }
+    },
+    "drain-audio": {
+      "readers": 3,
+      "readers_served": 3,
+      "parts_received": 13203,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 28,
+      "cache_to_reader_latency_p50_ms": 0.042,
+      "cache_to_reader_latency_p99_worst_ms": 1.382,
+      "readers_moved": 3,
+      "longest_gap_between_parts_of_a_moved_reader_ms": 42,
+      "startup_ms": [
+        10,
+        11
+      ],
+      "readers_by_final_cache": {
+        "10.77.1.22:19444": 3
+      }
+    },
+    "drain-video-steered": {
+      "readers": 1,
+      "readers_served": 1,
+      "parts_received": 530,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 0,
+      "cache_to_reader_latency_p50_ms": 0.493,
+      "cache_to_reader_latency_p99_worst_ms": 5.061,
+      "readers_moved": 1,
+      "longest_gap_between_parts_of_a_moved_reader_ms": 79,
+      "startup_ms": [
+        26,
+        26
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-2": 1
+      }
+    },
+    "drain-audio-steered": {
+      "readers": 1,
+      "readers_served": 1,
+      "parts_received": 4270,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 47,
+      "cache_to_reader_latency_p50_ms": 0.021,
+      "cache_to_reader_latency_p99_worst_ms": 3.99,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        673,
+        673
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-2": 1
+      }
+    },
+    "stall": {
+      "readers": 6,
+      "readers_served": 6,
+      "parts_received": 3756,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 668,
+      "cache_to_reader_latency_p50_ms": 0.624,
+      "cache_to_reader_latency_p99_worst_ms": 368.59,
+      "readers_moved": 3,
+      "longest_gap_between_parts_of_a_moved_reader_ms": 652,
+      "startup_ms": [
+        33,
+        47
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-2": 2,
+        "lon-edge-3": 1,
+        "lon-edge-4": 3
+      }
+    },
+    "parent-video": {
+      "readers": 3,
+      "readers_served": 3,
+      "parts_received": 1734,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 11,
+      "cache_to_reader_latency_p50_ms": 0.655,
+      "cache_to_reader_latency_p99_worst_ms": 10.665,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        12,
+        12
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-3": 3
+      }
+    },
+    "parent-audio": {
+      "readers": 3,
+      "readers_served": 3,
+      "parts_received": 14388,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 504,
+      "cache_to_reader_latency_p50_ms": 0.057,
+      "cache_to_reader_latency_p99_worst_ms": 283.715,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        28,
+        78
+      ],
+      "readers_by_final_cache": {
+        "lon-edge-1": 1,
+        "lon-edge-2": 1,
+        "lon-edge-3": 1
+      }
+    },
+    "region-video": {
+      "readers": 3,
+      "readers_served": 3,
+      "parts_received": 1154,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 67,
+      "cache_to_reader_latency_p50_ms": 1.338,
+      "cache_to_reader_latency_p99_worst_ms": 5.168,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        24,
+        69
+      ],
+      "readers_by_final_cache": {
+        "new-edge-1": 1,
+        "new-edge-2": 2
+      }
+    },
+    "region-audio": {
+      "readers": 3,
+      "readers_served": 3,
+      "parts_received": 9591,
+      "parts_missing": 0,
+      "underruns_with_1s_buffer": 0,
+      "worst_part_behind_schedule_ms": 0,
+      "cache_to_reader_latency_p50_ms": 0.418,
+      "cache_to_reader_latency_p99_worst_ms": 10.49,
+      "readers_moved": 0,
+      "longest_gap_between_parts_of_a_moved_reader_ms": null,
+      "startup_ms": [
+        71,
+        71
+      ],
+      "readers_by_final_cache": {
+        "new-edge-2": 3
+      }
+    }
+  },
+  "replicate": {
+    "video_cold_start_ms": 28,
+    "audio_cold_start_ms": 9,
+    "segment_start_difference_s": 0.0,
+    "edge_segment_names": [
+      "seg135.mp4",
+      "seg136.mp4",
+      "seg137.mp4"
+    ],
+    "distributor_segment_names": [
+      "seg206.mp4",
+      "seg207.mp4",
+      "seg208.mp4"
+    ]
+  },
+  "symbol_size_comparison": {
+    "fixed-900": {
+      "edge_service_cpu_percent": 49.5,
+      "edge_mesh_rx_datagrams_per_s": 5781,
+      "edge_mesh_rx_mbit_s": 43.3,
+      "edge_repaired_objects": 0,
+      "edge_presumed_lost_datagrams": 0,
+      "distributor_cpu_percent": [
+        16.1,
+        17.0
+      ],
+      "readers": {
+        "readers_ok": 4,
+        "parts_received": 2884,
+        "parts_missing": 0,
+        "underruns": 0,
+        "max_behind_ms": 126
+      },
+      "cache_to_reader_latency_p50_ms": 0.949,
+      "cache_to_reader_latency_p99_ms": 33.045
+    },
+    "scaled-16000": {
+      "edge_service_cpu_percent": 23.7,
+      "edge_mesh_rx_datagrams_per_s": 2543,
+      "edge_mesh_rx_mbit_s": 37.2,
+      "edge_repaired_objects": 0,
+      "edge_presumed_lost_datagrams": 0,
+      "distributor_cpu_percent": [
+        13.4,
+        14.4
+      ],
+      "readers": {
+        "readers_ok": 4,
+        "parts_received": 2892,
+        "parts_missing": 0,
+        "underruns": 0,
+        "max_behind_ms": 0
+      },
+      "cache_to_reader_latency_p50_ms": 0.859,
+      "cache_to_reader_latency_p99_ms": 4.649
+    }
+  },
+  "node_usage": {
+    "balance": {
+      "contrib-lon": {
+        "service_cpu_percent": 31.5,
+        "memory_mb": 124,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 32.99,
+        "public_tx_mbit_s": 39.48
+      },
+      "relay-primary": {
+        "service_cpu_percent": 19.5,
+        "memory_mb": 174,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 54.05,
+        "public_tx_mbit_s": 54.05
+      },
+      "relay-secondary": {
+        "service_cpu_percent": 19.6,
+        "memory_mb": 176,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.14,
+        "vlan_tx_mbit_s": 0.0,
+        "public_tx_mbit_s": 49.85
+      },
+      "lon-dist-a": {
+        "service_cpu_percent": 24.7,
+        "memory_mb": 161,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.01,
+        "vlan_tx_mbit_s": 76.74,
+        "public_tx_mbit_s": 0.04
+      },
+      "lon-dist-b": {
+        "service_cpu_percent": 21.6,
+        "memory_mb": 156,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 53.59,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-1": {
+        "service_cpu_percent": 15.5,
+        "memory_mb": 235,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.01,
+        "vlan_tx_mbit_s": 35.76,
+        "public_tx_mbit_s": 0.06
+      },
+      "lon-edge-2": {
+        "service_cpu_percent": 15.8,
+        "memory_mb": 160,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 44.4,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-3": {
+        "service_cpu_percent": 21.9,
+        "memory_mb": 222,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.02,
+        "vlan_tx_mbit_s": 34.53,
+        "public_tx_mbit_s": 0.04
+      },
+      "lon-edge-4": {
+        "service_cpu_percent": 21.9,
+        "memory_mb": 283,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.01,
+        "vlan_tx_mbit_s": 39.22,
+        "public_tx_mbit_s": 0.02
+      },
+      "new-dist-a": {
+        "service_cpu_percent": 10.3,
+        "memory_mb": 159,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.01,
+        "vlan_tx_mbit_s": 0.22,
+        "public_tx_mbit_s": 0.03
+      },
+      "new-dist-b": {
+        "service_cpu_percent": 6.7,
+        "memory_mb": 158,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.01,
+        "vlan_tx_mbit_s": 0.22,
+        "public_tx_mbit_s": 0.03
+      },
+      "new-edge-1": {
+        "service_cpu_percent": 0.6,
+        "memory_mb": 101,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.32,
+        "public_tx_mbit_s": 0.0
+      },
+      "new-edge-2": {
+        "service_cpu_percent": 0.7,
+        "memory_mb": 114,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.33,
+        "public_tx_mbit_s": 0.0
+      }
+    },
+    "stall": {
+      "contrib-lon": {
+        "service_cpu_percent": 29.9,
+        "memory_mb": 127,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.03,
+        "vlan_tx_mbit_s": 31.75,
+        "public_tx_mbit_s": 38.26
+      },
+      "relay-primary": {
+        "service_cpu_percent": 19.0,
+        "memory_mb": 174,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 51.56,
+        "public_tx_mbit_s": 51.55
+      },
+      "relay-secondary": {
+        "service_cpu_percent": 19.1,
+        "memory_mb": 177,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.13,
+        "vlan_tx_mbit_s": 0.0,
+        "public_tx_mbit_s": 49.92
+      },
+      "lon-dist-a": {
+        "service_cpu_percent": 26.9,
+        "memory_mb": 166,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 81.75,
+        "public_tx_mbit_s": 0.05
+      },
+      "lon-dist-b": {
+        "service_cpu_percent": 24.7,
+        "memory_mb": 161,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 68.83,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-1": {
+        "service_cpu_percent": 9.0,
+        "memory_mb": 392,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 18.88,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-2": {
+        "service_cpu_percent": 28.8,
+        "memory_mb": 221,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 27.08,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-3": {
+        "service_cpu_percent": 18.3,
+        "memory_mb": 462,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 7.64,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-4": {
+        "service_cpu_percent": 27.1,
+        "memory_mb": 493,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 27.89,
+        "public_tx_mbit_s": 0.03
+      },
+      "new-dist-a": {
+        "service_cpu_percent": 10.4,
+        "memory_mb": 164,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.22,
+        "public_tx_mbit_s": 0.03
+      },
+      "new-dist-b": {
+        "service_cpu_percent": 6.6,
+        "memory_mb": 164,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.21,
+        "public_tx_mbit_s": 0.03
+      },
+      "new-edge-1": {
+        "service_cpu_percent": 0.7,
+        "memory_mb": 101,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.32,
+        "public_tx_mbit_s": 0.0
+      },
+      "new-edge-2": {
+        "service_cpu_percent": 0.7,
+        "memory_mb": 114,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.33,
+        "public_tx_mbit_s": 0.0
+      }
+    },
+    "region": {
+      "contrib-lon": {
+        "service_cpu_percent": 29.6,
+        "memory_mb": 126,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 31.7,
+        "public_tx_mbit_s": 38.18
+      },
+      "relay-primary": {
+        "service_cpu_percent": 18.6,
+        "memory_mb": 174,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 51.43,
+        "public_tx_mbit_s": 51.42
+      },
+      "relay-secondary": {
+        "service_cpu_percent": 20.8,
+        "memory_mb": 176,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.36,
+        "vlan_tx_mbit_s": 0.0,
+        "public_tx_mbit_s": 49.79
+      },
+      "lon-dist-a": {
+        "service_cpu_percent": 11.6,
+        "memory_mb": 119,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 5.26,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-dist-b": {
+        "service_cpu_percent": 13.8,
+        "memory_mb": 169,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 12.03,
+        "public_tx_mbit_s": 0.03
+      },
+      "lon-edge-1": {
+        "service_cpu_percent": 1.0,
+        "memory_mb": 407,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.56,
+        "public_tx_mbit_s": 0.17
+      },
+      "lon-edge-2": {
+        "service_cpu_percent": 10.2,
+        "memory_mb": 314,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.04,
+        "vlan_tx_mbit_s": 0.55,
+        "public_tx_mbit_s": 0.17
+      },
+      "lon-edge-3": {
+        "service_cpu_percent": 1.1,
+        "memory_mb": 493,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.6,
+        "public_tx_mbit_s": 0.04
+      },
+      "lon-edge-4": {
+        "service_cpu_percent": 0.9,
+        "memory_mb": 496,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 0.56,
+        "public_tx_mbit_s": 0.04
+      },
+      "new-dist-a": {
+        "service_cpu_percent": 21.5,
+        "memory_mb": 172,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 42.26,
+        "public_tx_mbit_s": 0.05
+      },
+      "new-dist-b": {
+        "service_cpu_percent": 14.5,
+        "memory_mb": 169,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 29.17,
+        "public_tx_mbit_s": 0.03
+      },
+      "new-edge-1": {
+        "service_cpu_percent": 20.9,
+        "memory_mb": 172,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 11.13,
+        "public_tx_mbit_s": 0.01
+      },
+      "new-edge-2": {
+        "service_cpu_percent": 24.3,
+        "memory_mb": 157,
+        "udp_receive_errors": 0,
+        "steal_percent": 0.0,
+        "vlan_tx_mbit_s": 26.83,
+        "public_tx_mbit_s": 0.01
+      }
+    }
+  },
+  "node_usage_note": "service processor time and memory of the systemd unit during each demonstration; a negative or very low value on a node that the demonstration stopped is omitted from the narrative",
+  "transfer": {
+    "public_tx_gb_total": 21.57,
+    "vlan_tx_gb_total": 30.55,
+    "public_tx_gb_by_node": {
+      "contrib-lon": 5.94,
+      "relay-primary": 8.15,
+      "relay-secondary": 7.44
+    },
+    "list_price_usd_if_billed": 0.11
+  },
+  "udp_receive_errors_total_by_node": {
+    "lon-edge-1": 89
+  },
+  "service_restarts_not_caused_by_a_demonstration": 0,
+  "findings": [
+    "A restarted cache was ignored by its parents because cache-mesh block identifiers restarted from the same value. Found in the local lab and corrected before the run.",
+    "The HTTP/2 server did not set TCP_NODELAY. An 85 kB part took 42 ms to download. Corrected before the run with a newer web-services revision.",
+    "Admission against the momentary bit rate of a playlist admitted a sixth 4K reader during a quiet passage. Found in the local lab and corrected before the run: admission uses the highest measured rate.",
+    "Warming a 4K copy at 50 Mbit/s on a 1 vCPU edge delayed its audio readers by up to 1.2 s. The warm-up rate is now 20 Mbit/s.",
+    "Caches number the segments of the 4K playlist differently when the key-frame interval is not the nominal segment length. Segment boundaries and program time agree.",
+    "An edge kept about 500 MB of released 4K copies. Corrected after the run.",
+    "Object-scaled cache-mesh symbols halve the processor use of an edge that serves 4K."
+  ],
+  "cleanup": {
+    "linode_instances_deleted": 15,
+    "linode_instances_remaining": 0,
+    "lab_firewall_deleted": true,
+    "tagged_resources_remaining": 0,
+    "watchdog_exited": true,
+    "local_lab_state_removed": true,
+    "sources_stopped_before_teardown": true,
+    "private_images_created": 0,
+    "pre_existing_resources_untouched": [
+      "operator instance arch-us-east",
+      "2 firewalls from July 2026"
+    ]
+  },
+  "local_lab_memory_of_one_edge_over_eight_4k_subscribe_release_cycles_mb": {
+    "binary_of_the_linode_run": [
+      28,
+      81,
+      123,
+      170,
+      215,
+      260,
+      305,
+      349,
+      392
+    ],
+    "with_the_correction": [
+      28,
+      68,
+      80,
+      86,
+      89,
+      97,
+      100,
+      102,
+      106
+    ]
+  },
+  "local_lab": {
+    "runs_of_nine_demonstrations_on_the_pushed_branches": 3,
+    "demonstrations_passed": 27,
+    "demonstrations_run": 27,
+    "parts_delivered_per_run": [
+      200028,
+      200036,
+      200021
+    ],
+    "parts_missing": 0,
+    "underruns_with_1s_buffer": 0,
+    "cache_mesh_receive_loss_ppm_at_each_edge": 2000,
+    "tc_netem_used": false,
+    "tc_netem_note": "the operator host ran kernel 7.2.11 with only the 7.3.4 module tree installed, so sch_netem could not be loaded without a restart",
+    "hq_soundkit_opus_stream_3001": {
+      "pinned_reader_parts": 2401,
+      "pinned_reader_parts_missing": 0,
+      "twelve_readers_underruns": 0,
+      "failover_readers_moved": 2,
+      "failover_parts_missing": 0,
+      "failover_longest_gap_ms": 196,
+      "run_on_linode": false
+    }
+  }
+}

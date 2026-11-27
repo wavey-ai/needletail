@@ -5,6 +5,19 @@ use serde::{Deserialize, Serialize};
 pub const MAX_FORWARDING_PARENTS: usize = 2;
 pub const MIN_FAST_BACKBONE_NODES: usize = 3;
 pub const MAX_FAST_BACKBONE_NODES: usize = 5;
+/// Playback edges that one forwarder of a merged topology feeds before the
+/// region needs another level of regional relays (low-latency item 4).
+pub const DEFAULT_MAX_EDGES_PER_FORWARDER: usize = 16;
+/// Contributors that publish one stream: the origin and at most one replica
+/// of it, the standby contributor (resilient mesh, workstream A 2.9). A
+/// replica is not a topology node: it feeds the origin's children and nothing
+/// else, so the first hop is this many origins by
+/// `ORIGIN_CHILDREN_WITH_REPLICA` children and never grows with regions,
+/// forwarders or listeners.
+pub const MAX_ORIGINS_PER_STREAM: usize = 2;
+/// Children of an origin that has a replica: the source lane's and the
+/// source-and-repair lane's, the two ingresses that merge the contributors.
+pub const ORIGIN_CHILDREN_WITH_REPLICA: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +37,11 @@ pub struct FailureDomain {
 }
 
 impl FailureDomain {
-    fn is_independent_from(&self, other: &Self, requirement: FailureDiversityRequirement) -> bool {
+    pub(crate) fn is_independent_from(
+        &self,
+        other: &Self,
+        requirement: FailureDiversityRequirement,
+    ) -> bool {
         match requirement {
             FailureDiversityRequirement::DistinctNodes => true,
             FailureDiversityRequirement::ProviderRegionAsnAndZone => {
@@ -114,6 +131,49 @@ impl PolicyViolation {
     }
 }
 
+/// A replica of the origin: a second contributor that publishes the same
+/// parts on lanes of its own to the origin's children. It is not a node of
+/// the topology, so no parent, level or failover rule bends for it; each
+/// origin child takes it on its free secondary lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginReplica<'a> {
+    pub node_id: &'a str,
+    pub failure_domain: &'a FailureDomain,
+    /// The node that each of its lanes ends at, one entry per lane.
+    pub child_node_ids: Vec<&'a str>,
+}
+
+/// What a topology is validated against beyond its own shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyPolicy {
+    pub diversity: FailureDiversityRequirement,
+    /// Nodes whose two parents are allowed to share a failure domain (checked
+    /// as DistinctNodes only). Each one is a declared gap that the compiled
+    /// plan records; a node listed whose parents are independent anyway, or
+    /// that is not in the topology, is a violation, so that nothing passes
+    /// silently. The merged topology needs it for every child of the two
+    /// first forwarders, which share the contributor's region.
+    pub shared_domain_parents: Vec<String>,
+    /// The rules of the merged topology (relay and distributor as one
+    /// forwarder): the origin feeds only first forwarders of its own region,
+    /// every node below them has two parents, and a forwarder feeds at most
+    /// `max_edges_per_forwarder` playback edges.
+    pub merged_forwarders: bool,
+    pub max_edges_per_forwarder: usize,
+}
+
+impl TopologyPolicy {
+    #[must_use]
+    pub fn new(diversity: FailureDiversityRequirement) -> Self {
+        Self {
+            diversity,
+            shared_domain_parents: Vec::new(),
+            merged_forwarders: false,
+            max_edges_per_forwarder: DEFAULT_MAX_EDGES_PER_FORWARDER,
+        }
+    }
+}
+
 impl RelayTopology {
     pub fn validate(&self) -> Result<(), Vec<PolicyViolation>> {
         self.validate_with_diversity(FailureDiversityRequirement::ProviderRegionAsnAndZone)
@@ -123,6 +183,20 @@ impl RelayTopology {
         &self,
         diversity: FailureDiversityRequirement,
     ) -> Result<(), Vec<PolicyViolation>> {
+        self.validate_with_policy(&TopologyPolicy::new(diversity))
+    }
+
+    pub fn validate_with_policy(
+        &self,
+        policy: &TopologyPolicy,
+    ) -> Result<(), Vec<PolicyViolation>> {
+        let diversity = policy.diversity;
+        let shared_domain_parents = policy
+            .shared_domain_parents
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let mut shared_domain_gaps_used = HashSet::new();
         let mut violations = Vec::new();
         if self.generation == 0 {
             violations.push(PolicyViolation::new(
@@ -305,10 +379,14 @@ impl RelayTopology {
                     nodes.get(primary_link.parent_node_id.as_str()),
                     nodes.get(secondary_link.parent_node_id.as_str()),
                 ) {
-                    if !primary_node
+                    let independent = primary_node
                         .failure_domain
-                        .is_independent_from(&secondary_node.failure_domain, diversity)
-                    {
+                        .is_independent_from(&secondary_node.failure_domain, diversity);
+                    if !independent && shared_domain_parents.contains(node.node_id.as_str()) {
+                        // A declared gap: distinct nodes suffice, and the
+                        // compiled plan records it.
+                        shared_domain_gaps_used.insert(node.node_id.as_str());
+                    } else if !independent {
                         violations.push(PolicyViolation::new(
                             "parent_failure_domain_overlap",
                             format!(
@@ -352,6 +430,38 @@ impl RelayTopology {
             }
         }
 
+        let mut declared = policy.shared_domain_parents.iter().collect::<Vec<_>>();
+        declared.sort();
+        declared.dedup();
+        for node_id in declared {
+            if !nodes.contains_key(node_id.as_str()) {
+                violations.push(PolicyViolation::new(
+                    "unknown_shared_domain_parent_node",
+                    format!(
+                        "a parent failure-domain gap is declared for {node_id}, which is absent"
+                    ),
+                ));
+            } else if !shared_domain_gaps_used.contains(node_id.as_str()) {
+                violations.push(PolicyViolation::new(
+                    "unneeded_shared_domain_parent_gap",
+                    format!(
+                        "a parent failure-domain gap is declared for {node_id}, whose parents need none"
+                    ),
+                ));
+            }
+        }
+
+        if policy.merged_forwarders {
+            self.validate_merged_forwarders(
+                policy,
+                &nodes,
+                &origins,
+                &links_by_child,
+                &children_by_parent,
+                &mut violations,
+            );
+        }
+
         let relationship_limit = self.nodes.len().saturating_sub(origins.len()) * 2;
         if self.parent_links.len() > relationship_limit {
             violations.push(PolicyViolation::new(
@@ -368,6 +478,244 @@ impl RelayTopology {
             Ok(())
         } else {
             Err(violations)
+        }
+    }
+
+    /// The rules of the origin's replicas, for a topology that has passed
+    /// `validate_with_policy`. The first hop is a fixed fan-out, two
+    /// contributors by two ingresses, and anything else is a violation:
+    /// - origin_replica_count: more origins than `MAX_ORIGINS_PER_STREAM`,
+    ///   the origin counted.
+    /// - origin_replica_node_id: a replica without an identity, with the
+    ///   identity of a topology node, or with another replica's.
+    /// - origin_replica_failure_domain: a replica without provider, region,
+    ///   ASN and zone.
+    /// - origin_replica_fanout: an origin that does not feed exactly
+    ///   `ORIGIN_CHILDREN_WITH_REPLICA` children.
+    /// - origin_replica_children: a replica without exactly one lane to each
+    ///   origin child, or with a lane to anything else.
+    /// - origin_replica_child_has_secondary_parent: an origin child whose
+    ///   secondary lane is taken by a parent, so it cannot take the replica.
+    pub fn validate_origin_replicas(
+        &self,
+        replicas: &[OriginReplica<'_>],
+    ) -> Result<(), Vec<PolicyViolation>> {
+        if replicas.is_empty() {
+            return Ok(());
+        }
+        let mut violations = Vec::new();
+        let Some(origin) = self.nodes.iter().find(|node| node.role == NodeRole::Origin) else {
+            return Err(vec![PolicyViolation::new(
+                "origin_count",
+                "an origin replica requires the topology's one origin",
+            )]);
+        };
+        if 1 + replicas.len() > MAX_ORIGINS_PER_STREAM {
+            violations.push(PolicyViolation::new(
+                "origin_replica_count",
+                format!(
+                    "a stream has at most {MAX_ORIGINS_PER_STREAM} origins, the origin and one replica; found {}",
+                    1 + replicas.len()
+                ),
+            ));
+        }
+        let mut origin_children = self
+            .parent_links
+            .iter()
+            .filter(|link| link.parent_node_id == origin.node_id)
+            .map(|link| link.child_node_id.as_str())
+            .collect::<Vec<_>>();
+        origin_children.sort_unstable();
+        origin_children.dedup();
+        if origin_children.len() != ORIGIN_CHILDREN_WITH_REPLICA {
+            violations.push(PolicyViolation::new(
+                "origin_replica_fanout",
+                format!(
+                    "origin {} feeds {} children; with a replica it feeds exactly {ORIGIN_CHILDREN_WITH_REPLICA}",
+                    origin.node_id,
+                    origin_children.len()
+                ),
+            ));
+        }
+        let mut replica_ids = HashSet::with_capacity(replicas.len());
+        for replica in replicas {
+            if replica.node_id.is_empty() {
+                violations.push(PolicyViolation::new(
+                    "origin_replica_node_id",
+                    "every origin replica requires an identity",
+                ));
+            } else if self
+                .nodes
+                .iter()
+                .any(|node| node.node_id == replica.node_id)
+            {
+                violations.push(PolicyViolation::new(
+                    "origin_replica_node_id",
+                    format!(
+                        "origin replica {} is a node of the topology; a replica is not a forwarder",
+                        replica.node_id
+                    ),
+                ));
+            } else if !replica_ids.insert(replica.node_id) {
+                violations.push(PolicyViolation::new(
+                    "origin_replica_node_id",
+                    format!("origin replica {} appears more than once", replica.node_id),
+                ));
+            }
+            if replica.failure_domain.provider.is_empty()
+                || replica.failure_domain.region.is_empty()
+                || replica.failure_domain.zone.is_empty()
+                || replica.failure_domain.asn == 0
+            {
+                violations.push(PolicyViolation::new(
+                    "origin_replica_failure_domain",
+                    format!(
+                        "origin replica {} requires provider, region, ASN, and zone",
+                        replica.node_id
+                    ),
+                ));
+            }
+            let mut lanes: HashMap<&str, usize> = HashMap::new();
+            for child_id in &replica.child_node_ids {
+                *lanes.entry(child_id).or_default() += 1;
+            }
+            for child_id in &origin_children {
+                let count = lanes.remove(child_id).unwrap_or(0);
+                if count != 1 {
+                    violations.push(PolicyViolation::new(
+                        "origin_replica_children",
+                        format!(
+                            "origin replica {} has {count} lanes to origin child {child_id}; it requires exactly one",
+                            replica.node_id
+                        ),
+                    ));
+                }
+            }
+            let mut strangers = lanes.into_keys().collect::<Vec<_>>();
+            strangers.sort_unstable();
+            for stranger in strangers {
+                violations.push(PolicyViolation::new(
+                    "origin_replica_children",
+                    format!(
+                        "origin replica {} has a lane to {stranger}, which is not a child of origin {}",
+                        replica.node_id, origin.node_id
+                    ),
+                ));
+            }
+        }
+        for child_id in &origin_children {
+            for link in self.parent_links.iter().filter(|link| {
+                link.child_node_id == *child_id && link.role == ParentRole::Secondary
+            }) {
+                violations.push(PolicyViolation::new(
+                    "origin_replica_child_has_secondary_parent",
+                    format!(
+                        "origin child {child_id} has secondary parent {}; its secondary lane cannot take an origin replica",
+                        link.parent_node_id
+                    ),
+                ));
+            }
+        }
+        if violations.is_empty() {
+            Ok(())
+        } else {
+            Err(violations)
+        }
+    }
+
+    /// The rules of the merged topology (low-latency item 4): relay and
+    /// distributor are one forwarder.
+    /// - origin_child_not_region_first_forwarder: the origin's children are
+    ///   level 1, in the origin's region, and never playback edges. The
+    ///   contributor feeds only its region's first forwarders directly.
+    /// - dual_parent_required: every node below level 1 has one primary and
+    ///   one secondary parent, so a lost branch is covered.
+    /// - forwarder_edge_fanout_exceeded: a forwarder feeds at most
+    ///   `max_edges_per_forwarder` playback edges; past that the region
+    ///   needs a level of regional relays.
+    fn validate_merged_forwarders(
+        &self,
+        policy: &TopologyPolicy,
+        nodes: &HashMap<&str, &RelayNode>,
+        origins: &[&RelayNode],
+        links_by_child: &HashMap<&str, Vec<&ParentLink>>,
+        children_by_parent: &HashMap<&str, HashSet<&str>>,
+        violations: &mut Vec<PolicyViolation>,
+    ) {
+        if let Some(origin) = origins.first() {
+            let mut children = children_by_parent
+                .get(origin.node_id.as_str())
+                .into_iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
+            children.sort_unstable();
+            for child_id in children {
+                let Some(child) = nodes.get(child_id) else {
+                    continue;
+                };
+                if child.level != 1
+                    || child.role == NodeRole::PlaybackEdge
+                    || child.failure_domain.region != origin.failure_domain.region
+                {
+                    violations.push(PolicyViolation::new(
+                        "origin_child_not_region_first_forwarder",
+                        format!(
+                            "origin {} feeds {} ({:?}, level {}, region {}); its children must be first forwarders at level 1 in region {}",
+                            origin.node_id,
+                            child.node_id,
+                            child.role,
+                            child.level,
+                            child.failure_domain.region,
+                            origin.failure_domain.region
+                        ),
+                    ));
+                }
+            }
+        }
+        for node in self.nodes.iter().filter(|node| node.level >= 2) {
+            let links = links_by_child
+                .get(node.node_id.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let primary = links
+                .iter()
+                .filter(|link| link.role == ParentRole::Primary)
+                .count();
+            let secondary = links
+                .iter()
+                .filter(|link| link.role == ParentRole::Secondary)
+                .count();
+            if primary != 1 || secondary != 1 {
+                violations.push(PolicyViolation::new(
+                    "dual_parent_required",
+                    format!(
+                        "node {} at level {} requires a primary and a secondary parent; found {primary} and {secondary}",
+                        node.node_id, node.level
+                    ),
+                ));
+            }
+        }
+        let mut parents = children_by_parent.iter().collect::<Vec<_>>();
+        parents.sort_unstable_by_key(|(parent, _)| **parent);
+        for (parent_id, children) in parents {
+            let edges = children
+                .iter()
+                .filter(|child| {
+                    nodes
+                        .get(*child)
+                        .is_some_and(|node| node.role == NodeRole::PlaybackEdge)
+                })
+                .count();
+            if edges > policy.max_edges_per_forwarder {
+                violations.push(PolicyViolation::new(
+                    "forwarder_edge_fanout_exceeded",
+                    format!(
+                        "forwarder {parent_id} feeds {edges} playback edges; above {} the region needs a level of regional relays",
+                        policy.max_edges_per_forwarder
+                    ),
+                ));
+            }
         }
     }
 }
@@ -1827,5 +2175,419 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    fn regional(id: &str, level: u16, role: NodeRole, region: &str) -> RelayNode {
+        RelayNode {
+            node_id: id.to_owned(),
+            level,
+            role,
+            failure_domain: FailureDomain {
+                provider: "linode".to_owned(),
+                region: region.to_owned(),
+                asn: 63_949,
+                zone: region.to_owned(),
+            },
+        }
+    }
+
+    fn parent(parent: &str, child: &str, role: ParentRole) -> ParentLink {
+        ParentLink {
+            parent_node_id: parent.into(),
+            child_node_id: child.into(),
+            role,
+        }
+    }
+
+    /// The merged topology of low-latency item 4: the contributor feeds the
+    /// two London forwarders, which feed the Sydney forwarders crossed and
+    /// the London edges; the Sydney forwarders feed the Sydney edge.
+    fn merged_topology() -> RelayTopology {
+        RelayTopology {
+            generation: 1,
+            nodes: vec![
+                regional("contrib", 0, NodeRole::Origin, "gb-lon"),
+                regional("f1", 1, NodeRole::Backbone, "gb-lon"),
+                regional("f2", 1, NodeRole::Backbone, "gb-lon"),
+                regional("f3", 2, NodeRole::RegionalRelay, "ap-southeast"),
+                regional("f4", 2, NodeRole::RegionalRelay, "ap-southeast"),
+                regional("lon-edge", 2, NodeRole::PlaybackEdge, "gb-lon"),
+                regional("syd-edge", 3, NodeRole::PlaybackEdge, "ap-southeast"),
+            ],
+            parent_links: vec![
+                parent("contrib", "f1", ParentRole::Primary),
+                parent("contrib", "f2", ParentRole::Primary),
+                parent("f1", "f3", ParentRole::Primary),
+                parent("f2", "f3", ParentRole::Secondary),
+                parent("f2", "f4", ParentRole::Primary),
+                parent("f1", "f4", ParentRole::Secondary),
+                parent("f1", "lon-edge", ParentRole::Primary),
+                parent("f2", "lon-edge", ParentRole::Secondary),
+                parent("f3", "syd-edge", ParentRole::Primary),
+                parent("f4", "syd-edge", ParentRole::Secondary),
+            ],
+            limits: TopologyLimits {
+                max_origin_children: 2,
+                max_downstream_children: 16,
+            },
+        }
+    }
+
+    fn merged_policy(shared: &[&str]) -> TopologyPolicy {
+        TopologyPolicy {
+            shared_domain_parents: shared.iter().map(|id| (*id).to_owned()).collect(),
+            merged_forwarders: true,
+            ..TopologyPolicy::new(FailureDiversityRequirement::RegionAndZone)
+        }
+    }
+
+    fn policy_codes(topology: &RelayTopology, policy: &TopologyPolicy) -> HashSet<String> {
+        error_codes(topology.validate_with_policy(policy))
+    }
+
+    const MERGED_GAPS: [&str; 4] = ["f3", "f4", "lon-edge", "syd-edge"];
+
+    #[test]
+    fn merged_topology_passes_with_its_shared_parent_domains_declared() {
+        merged_topology()
+            .validate_with_policy(&merged_policy(&MERGED_GAPS))
+            .unwrap();
+        // Distinct nodes need no declaration.
+        merged_topology()
+            .validate_with_policy(&TopologyPolicy {
+                merged_forwarders: true,
+                ..TopologyPolicy::new(FailureDiversityRequirement::DistinctNodes)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn region_and_zone_reports_same_region_edge_parents_rather_than_passing_them() {
+        let violations = merged_topology()
+            .validate_with_policy(&merged_policy(&["f3", "f4", "syd-edge"]))
+            .expect_err("an edge with two London parents must not pass silently");
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].code, "parent_failure_domain_overlap");
+        assert!(violations[0].detail.contains("lon-edge"));
+        // Every child of the two first forwarders is reported without one.
+        let violations = merged_topology()
+            .validate_with_policy(&merged_policy(&[]))
+            .unwrap_err();
+        assert_eq!(
+            violations
+                .iter()
+                .filter(|violation| violation.code == "parent_failure_domain_overlap")
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn a_declared_gap_must_be_needed_and_name_a_node() {
+        let mut shared = MERGED_GAPS.to_vec();
+        shared.push("nowhere");
+        assert_eq!(
+            policy_codes(&merged_topology(), &merged_policy(&shared)),
+            HashSet::from(["unknown_shared_domain_parent_node".to_owned()])
+        );
+        let mut topology = merged_topology();
+        // f3's secondary parent moves to another region: no gap left.
+        topology
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "f2")
+            .unwrap()
+            .failure_domain = regional("x", 1, NodeRole::Backbone, "nl-ams").failure_domain;
+        let codes = policy_codes(&topology, &merged_policy(&MERGED_GAPS));
+        assert!(
+            codes.contains("unneeded_shared_domain_parent_gap"),
+            "{codes:?}"
+        );
+        // f2 is now outside the origin's region.
+        assert!(
+            codes.contains("origin_child_not_region_first_forwarder"),
+            "{codes:?}"
+        );
+    }
+
+    #[test]
+    fn origin_child_not_region_first_forwarder() {
+        // The contributor feeding an edge directly.
+        let mut topology = merged_topology();
+        topology.parent_links[1] = parent("contrib", "lon-edge", ParentRole::Primary);
+        topology
+            .parent_links
+            .retain(|link| link.child_node_id != "lon-edge" || link.parent_node_id == "contrib");
+        topology
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "lon-edge")
+            .unwrap()
+            .level = 1;
+        let codes = policy_codes(&topology, &merged_policy(&[]));
+        assert!(
+            codes.contains("origin_child_not_region_first_forwarder"),
+            "{codes:?}"
+        );
+
+        // The contributor feeding a forwarder of another region.
+        let mut topology = merged_topology();
+        topology
+            .nodes
+            .iter_mut()
+            .find(|node| node.node_id == "f2")
+            .unwrap()
+            .failure_domain = regional("x", 1, NodeRole::Backbone, "us-east").failure_domain;
+        let codes = policy_codes(&topology, &merged_policy(&MERGED_GAPS));
+        assert!(
+            codes.contains("origin_child_not_region_first_forwarder"),
+            "{codes:?}"
+        );
+
+        // The legacy topology does not apply the rule: its secondary
+        // backbone is in another region.
+        topology
+            .validate_with_policy(&TopologyPolicy::new(
+                FailureDiversityRequirement::RegionAndZone,
+            ))
+            .unwrap_err()
+            .iter()
+            .for_each(|violation| {
+                assert_ne!(violation.code, "origin_child_not_region_first_forwarder")
+            });
+    }
+
+    #[test]
+    fn every_node_below_the_first_forwarders_has_two_parents() {
+        let mut topology = merged_topology();
+        topology.parent_links.retain(|link| {
+            !(link.child_node_id == "syd-edge" && link.role == ParentRole::Secondary)
+        });
+        let violations = topology
+            .validate_with_policy(&merged_policy(&["f3", "f4", "lon-edge"]))
+            .unwrap_err();
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].code, "dual_parent_required");
+        assert!(violations[0].detail.contains("syd-edge"));
+    }
+
+    #[test]
+    fn a_forwarder_feeds_a_bounded_number_of_edges() {
+        let mut topology = merged_topology();
+        topology
+            .nodes
+            .push(regional("lon-edge-2", 2, NodeRole::PlaybackEdge, "gb-lon"));
+        topology
+            .parent_links
+            .push(parent("f1", "lon-edge-2", ParentRole::Primary));
+        topology
+            .parent_links
+            .push(parent("f2", "lon-edge-2", ParentRole::Secondary));
+        let mut shared = MERGED_GAPS.to_vec();
+        shared.push("lon-edge-2");
+        let mut policy = merged_policy(&shared);
+        topology.validate_with_policy(&policy).unwrap();
+        policy.max_edges_per_forwarder = 1;
+        let violations = topology.validate_with_policy(&policy).unwrap_err();
+        assert_eq!(
+            violations
+                .iter()
+                .map(|violation| violation.code.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "forwarder_edge_fanout_exceeded",
+                "forwarder_edge_fanout_exceeded"
+            ]
+        );
+        assert!(violations[0].detail.contains("f1"));
+    }
+
+    /// The first hop of the resilient mesh: the origin and one replica, the
+    /// standby contributor, each with one lane to each first forwarder.
+    fn replica<'a>(domain: &'a FailureDomain, children: &[&'a str]) -> OriginReplica<'a> {
+        OriginReplica {
+            node_id: "contrib-b",
+            failure_domain: domain,
+            child_node_ids: children.to_vec(),
+        }
+    }
+
+    fn replica_codes(topology: &RelayTopology, replicas: &[OriginReplica<'_>]) -> Vec<String> {
+        topology
+            .validate_origin_replicas(replicas)
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|violation| violation.code)
+            .collect()
+    }
+
+    #[test]
+    fn the_origin_takes_one_replica_that_feeds_its_two_children() {
+        let london = regional("x", 0, NodeRole::Origin, "gb-lon").failure_domain;
+        let topology = merged_topology();
+        topology.validate_origin_replicas(&[]).unwrap();
+        topology
+            .validate_origin_replicas(&[replica(&london, &["f1", "f2"])])
+            .unwrap();
+        // The order of its lanes is not the topology's business.
+        topology
+            .validate_origin_replicas(&[replica(&london, &["f2", "f1"])])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_stream_never_has_more_than_two_origins() {
+        let london = regional("x", 0, NodeRole::Origin, "gb-lon").failure_domain;
+        let mut second = replica(&london, &["f1", "f2"]);
+        second.node_id = "contrib-c";
+        assert_eq!(
+            replica_codes(
+                &merged_topology(),
+                &[replica(&london, &["f1", "f2"]), second]
+            ),
+            ["origin_replica_count"]
+        );
+        // The same replica twice is no way around the count either.
+        assert_eq!(
+            replica_codes(
+                &merged_topology(),
+                &[
+                    replica(&london, &["f1", "f2"]),
+                    replica(&london, &["f1", "f2"])
+                ]
+            ),
+            ["origin_replica_count", "origin_replica_node_id"]
+        );
+    }
+
+    #[test]
+    fn an_origin_replica_is_never_a_topology_node() {
+        let london = regional("x", 0, NodeRole::Origin, "gb-lon").failure_domain;
+        for node_id in ["contrib", "f3", "lon-edge", ""] {
+            let mut named = replica(&london, &["f1", "f2"]);
+            named.node_id = node_id;
+            assert_eq!(
+                replica_codes(&merged_topology(), &[named]),
+                ["origin_replica_node_id"],
+                "{node_id:?}"
+            );
+        }
+        let mut incomplete = london.clone();
+        incomplete.asn = 0;
+        assert_eq!(
+            replica_codes(&merged_topology(), &[replica(&incomplete, &["f1", "f2"])]),
+            ["origin_replica_failure_domain"]
+        );
+    }
+
+    #[test]
+    fn an_origin_replica_feeds_each_origin_child_once_and_nothing_else() {
+        let london = regional("x", 0, NodeRole::Origin, "gb-lon").failure_domain;
+        let topology = merged_topology();
+        for (children, expected) in [
+            // No lane to f2.
+            (vec!["f1"], vec!["origin_replica_children"]),
+            // Two lanes to f1 and none to f2.
+            (
+                vec!["f1", "f1"],
+                vec!["origin_replica_children", "origin_replica_children"],
+            ),
+            // A lane past the first forwarders: a remote forwarder, an edge.
+            (vec!["f1", "f2", "f3"], vec!["origin_replica_children"]),
+            (
+                vec!["f1", "f2", "lon-edge"],
+                vec!["origin_replica_children"],
+            ),
+            (vec!["f1", "f2", "nowhere"], vec!["origin_replica_children"]),
+            (vec![], vec!["origin_replica_children"; 2]),
+        ] {
+            assert_eq!(
+                replica_codes(&topology, &[replica(&london, &children)]),
+                expected,
+                "{children:?}"
+            );
+        }
+        let violations = topology
+            .validate_origin_replicas(&[replica(&london, &["f1", "f2", "f3"])])
+            .unwrap_err();
+        assert!(violations[0].detail.contains("f3"), "{violations:?}");
+    }
+
+    #[test]
+    fn the_first_hop_with_a_replica_is_two_origins_by_two_children() {
+        let london = regional("x", 0, NodeRole::Origin, "gb-lon").failure_domain;
+        // A third first forwarder under the origin: the fan-out would grow.
+        let mut topology = merged_topology();
+        topology.limits.max_origin_children = 3;
+        topology
+            .nodes
+            .push(regional("f5", 1, NodeRole::Backbone, "gb-lon"));
+        topology
+            .parent_links
+            .push(parent("contrib", "f5", ParentRole::Primary));
+        topology
+            .validate_with_policy(&merged_policy(&MERGED_GAPS))
+            .unwrap();
+        assert_eq!(
+            replica_codes(&topology, &[replica(&london, &["f1", "f2", "f5"])]),
+            ["origin_replica_fanout"]
+        );
+        // One child only: nothing merges the two contributors a second time.
+        let mut topology = merged_topology();
+        topology
+            .parent_links
+            .retain(|link| !(link.parent_node_id == "contrib" && link.child_node_id == "f2"));
+        assert_eq!(
+            replica_codes(&topology, &[replica(&london, &["f1"])]),
+            ["origin_replica_fanout"]
+        );
+    }
+
+    #[test]
+    fn an_origin_child_with_a_secondary_parent_cannot_take_a_replica() {
+        // backbone-b one level down, with backbone-a as its secondary
+        // parent: a valid topology, but backbone-b's secondary lane is not
+        // free for the standby contributor.
+        let mut topology = valid_topology();
+        for node in &mut topology.nodes {
+            match node.node_id.as_str() {
+                "backbone-b" => node.level = 2,
+                "edge" => node.level = 3,
+                _ => {}
+            }
+        }
+        topology.parent_links.push(ParentLink {
+            parent_node_id: "backbone-a".into(),
+            child_node_id: "backbone-b".into(),
+            role: ParentRole::Secondary,
+        });
+        topology.validate().unwrap();
+        let domain = node("x", 0, NodeRole::Origin, 9).failure_domain;
+        let violations = topology
+            .validate_origin_replicas(&[replica(&domain, &["backbone-a", "backbone-b"])])
+            .unwrap_err();
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(
+            violations[0].code,
+            "origin_replica_child_has_secondary_parent"
+        );
+        assert!(violations[0].detail.contains("backbone-b"));
+        assert!(violations[0].detail.contains("backbone-a"));
+        // Without that parent the same replica passes.
+        valid_topology()
+            .validate_origin_replicas(&[replica(&domain, &["backbone-a", "backbone-b"])])
+            .unwrap();
+    }
+
+    #[test]
+    fn a_replica_needs_the_topologys_origin() {
+        let london = regional("x", 0, NodeRole::Origin, "gb-lon").failure_domain;
+        let mut topology = merged_topology();
+        topology.nodes.retain(|node| node.role != NodeRole::Origin);
+        assert_eq!(
+            replica_codes(&topology, &[replica(&london, &["f1", "f2"])]),
+            ["origin_count"]
+        );
     }
 }

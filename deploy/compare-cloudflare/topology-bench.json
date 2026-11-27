@@ -1,0 +1,7 @@
+{
+  "description": "One workbench for the Cloudflare comparison: builds the Needletail binaries of the pushed heads, encodes the timestamped 4K clips and tests the harness. It carries no measurement.",
+  "image": "linode/debian13",
+  "nodes": [
+    {"name": "bench", "role": "load", "site": "london", "region": "gb-lon", "type": "g6-dedicated-8"}
+  ]
+}

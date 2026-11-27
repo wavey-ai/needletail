@@ -7,6 +7,12 @@ canonical [current performance state and gaps](current-state-and-gaps.md)
 contains the concise result, current bottleneck, and ordered next work; this
 page retains the implementation prompt, arithmetic, and gates.
 
+The geometry below is 5 ms parts, the default when this qualification was
+written. Parts are now the smallest frame by default: 2.5 ms Opus (400 parts
+a second), 1 ms lossless PCM (1,000 a second, and down to 0.25 ms). Every
+per-part cost here scales with the part rate; repeat the arithmetic at the
+deployed part size before using a capacity figure.
+
 The test uses 48 kHz S24 PCM throughout. It does not deploy a contributor,
 relay DAG, or remote mesh until the isolated gates pass.
 

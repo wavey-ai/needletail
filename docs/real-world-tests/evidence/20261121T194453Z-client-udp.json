@@ -1,0 +1,851 @@
+{
+ "run": "20261121T194453Z-client-udp",
+ "state": {
+  "relay-secondary": {
+   "role": "backbone",
+   "type": "g6-dedicated-2",
+   "region": "nl-ams"
+  },
+  "lon-dist-b": {
+   "role": "distributor",
+   "type": "g6-dedicated-2",
+   "region": "gb-lon"
+  },
+  "contrib-lon": {
+   "role": "contributor",
+   "type": "g6-dedicated-4",
+   "region": "gb-lon"
+  },
+  "lon-edge-2": {
+   "role": "edge",
+   "type": "g6-dedicated-2",
+   "region": "gb-lon"
+  },
+  "lon-load": {
+   "role": "load",
+   "type": "g6-dedicated-4",
+   "region": "gb-lon"
+  },
+  "relay-primary": {
+   "role": "backbone",
+   "type": "g6-dedicated-2",
+   "region": "gb-lon"
+  },
+  "lon-edge-1": {
+   "role": "edge",
+   "type": "g6-dedicated-2",
+   "region": "gb-lon"
+  },
+  "lon-dist-a": {
+   "role": "distributor",
+   "type": "g6-dedicated-2",
+   "region": "gb-lon"
+  }
+ },
+ "settings": {
+  "part_ms": 5,
+  "parts_per_segment": 200,
+  "window_parts": 2400,
+  "fmp4_part_ms": 5,
+  "fmp4_video_part_ms": 200,
+  "fmp4_video_segment_ms": 2000,
+  "mesh_sync_interval_ms": 2,
+  "mesh_symbol_size": 900,
+  "mesh_max_symbol_size": 16000,
+  "telemetry_interval_ms": 500,
+  "playback_address": "public",
+  "cache_mesh_demand_idle_ms": 8000,
+  "cache_mesh_lease_ms": 3000,
+  "cache_mesh_warm_kbps": 20000,
+  "edge_egress_capacity_bps": 100000000,
+  "steering_ttl_seconds": 1,
+  "daw_hls_formats": "flac,opus,pcm",
+  "client_udp_port": 19446
+ },
+ "live": {
+  "video-4k": true,
+  "flac": true,
+  "opus": true,
+  "pcm": true
+ },
+ "steps": [
+  {
+   "step": "loss-0",
+   "loss_percent": 0.0,
+   "drained": [],
+   "udp": {
+    "udp-flac": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8989,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 14,
+     "datagram_loss": 0.00010969482898576161,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8989,
+      "p50": 2.934,
+      "p95": 38.09,
+      "p99": 62.249,
+      "max": 144.281
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 22.179,
+      "p95": 22.179,
+      "p99": 22.179,
+      "max": 22.179
+     },
+     "time_to_first_part_ms": 76.556326,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 46098,
+     "source_datagrams": 18993,
+     "payload_bytes": 9562323,
+     "identical": 8989
+    },
+    "udp-opus": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8705,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 8,
+     "datagram_loss": 0.0,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8705,
+      "p50": 2.748,
+      "p95": 47.392,
+      "p99": 73.14,
+      "max": 168.473
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 3.85,
+      "p95": 3.85,
+      "p99": 3.85,
+      "max": 3.85
+     },
+     "time_to_first_part_ms": 1479.703728,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 34880,
+     "source_datagrams": 8705,
+     "payload_bytes": 696400,
+     "identical": 8705
+    },
+    "udp-pcm": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8758,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 40,
+     "datagram_loss": 0.008313785014488755,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8758,
+      "p50": 2.222,
+      "p95": 38.514,
+      "p99": 61.815,
+      "max": 132.638
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 0.988,
+      "p95": 0.988,
+      "p99": 0.988,
+      "max": 0.988
+     },
+     "time_to_first_part_ms": 1212.571349,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 58554,
+     "source_datagrams": 26481,
+     "payload_bytes": 12611520,
+     "identical": 8758
+    },
+    "udp-video-4k": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 223,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 0,
+     "datagram_loss": 0.0,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 223,
+      "p50": 42.923,
+      "p95": 88.005,
+      "p99": 113.328,
+      "max": 214.238
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 100.697,
+      "p95": 100.697,
+      "p99": 100.697,
+      "max": 100.697
+     },
+     "time_to_first_part_ms": 708.772998,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 106774,
+     "source_datagrams": 86752,
+     "payload_bytes": 87304575,
+     "identical": 223
+    }
+   },
+   "hls": {
+    "hls-flac": {
+     "parts_received": 8941,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-video-4k": {
+     "parts_received": 224,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-opus": {
+     "parts_received": 8708,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-pcm": {
+     "parts_received": 8982,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    }
+   },
+   "pass": true
+  },
+  {
+   "step": "loss-1",
+   "loss_percent": 1.0,
+   "drained": [],
+   "udp": {
+    "udp-flac": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8998,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 225,
+     "datagram_loss": 0.04471113737486096,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8998,
+      "p50": 2.926,
+      "p95": 31.52,
+      "p99": 43.618,
+      "max": 75.032
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 4.206,
+      "p95": 4.206,
+      "p99": 4.206,
+      "max": 4.206
+     },
+     "time_to_first_part_ms": 16.531943000000002,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 114396,
+     "source_datagrams": 21146,
+     "payload_bytes": 10291720,
+     "identical": 8998
+    },
+    "udp-opus": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8999,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 112,
+     "datagram_loss": 0.04540921313420777,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8999,
+      "p50": 2.766,
+      "p95": 43.785,
+      "p99": 60.137,
+      "max": 89.643
+     },
+     "available_to_arrival_ms": {
+      "count": 2,
+      "p50": 7.166,
+      "p95": 7.166,
+      "p99": 7.166,
+      "max": 7.166
+     },
+     "time_to_first_part_ms": 14.678840000000001,
+     "moves": [],
+     "caches": [
+      "lon-edge-1"
+     ],
+     "datagrams": 78521,
+     "source_datagrams": 8925,
+     "payload_bytes": 719920,
+     "identical": 8999
+    },
+    "udp-pcm": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8997,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 337,
+     "datagram_loss": 0.042748672451754954,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8997,
+      "p50": 2.213,
+      "p95": 37.21,
+      "p99": 52.636,
+      "max": 79.868
+     },
+     "available_to_arrival_ms": {
+      "count": 4,
+      "p50": 3.819,
+      "p95": 6.885,
+      "p99": 6.885,
+      "max": 6.885
+     },
+     "time_to_first_part_ms": 16.191384,
+     "moves": [],
+     "caches": [
+      "lon-edge-1"
+     ],
+     "datagrams": 122906,
+     "source_datagrams": 26863,
+     "payload_bytes": 12955680,
+     "identical": 8997
+    },
+    "udp-video-4k": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 226,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 216,
+     "datagram_loss": 0.010087723540278355,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 226,
+      "p50": 60.373,
+      "p95": 96.06,
+      "p99": 114.029,
+      "max": 202.274
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 170.288,
+      "p95": 170.288,
+      "p99": 170.288,
+      "max": 170.288
+     },
+     "time_to_first_part_ms": 28.446481,
+     "moves": [],
+     "caches": [
+      "lon-edge-1"
+     ],
+     "datagrams": 109296,
+     "source_datagrams": 88772,
+     "payload_bytes": 91930367,
+     "identical": 226
+    }
+   },
+   "hls": {
+    "hls-video-4k": {
+     "parts_received": 227,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-flac": {
+     "parts_received": 8998,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-pcm": {
+     "parts_received": 8997,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-opus": {
+     "parts_received": 9000,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    }
+   },
+   "pass": true
+  },
+  {
+   "step": "loss-5",
+   "loss_percent": 5.0,
+   "drained": [],
+   "udp": {
+    "udp-flac": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8997,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 1013,
+     "datagram_loss": 0.06883572427630953,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8997,
+      "p50": 3.0,
+      "p95": 30.101,
+      "p99": 44.022,
+      "max": 67.578
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 14.366,
+      "p95": 14.366,
+      "p99": 14.366,
+      "max": 14.366
+     },
+     "time_to_first_part_ms": 17.629077,
+     "moves": [],
+     "caches": [
+      "lon-edge-1"
+     ],
+     "datagrams": 129943,
+     "source_datagrams": 20547,
+     "payload_bytes": 10307916,
+     "identical": 8997
+    },
+    "udp-opus": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8997,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 457,
+     "datagram_loss": 0.07032030365585669,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8997,
+      "p50": 2.861,
+      "p95": 42.085,
+      "p99": 61.933,
+      "max": 103.721
+     },
+     "available_to_arrival_ms": {
+      "count": 2,
+      "p50": 66.058,
+      "p95": 66.058,
+      "p99": 66.058,
+      "max": 66.058
+     },
+     "time_to_first_part_ms": 18.706564,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 85551,
+     "source_datagrams": 8564,
+     "payload_bytes": 719760,
+     "identical": 8997
+    },
+    "udp-pcm": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8985,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 1249,
+     "datagram_loss": 0.06632095701781596,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8982,
+      "p50": 2.313,
+      "p95": 32.93,
+      "p99": 48.102,
+      "max": 72.375
+     },
+     "available_to_arrival_ms": {
+      "count": 7,
+      "p50": 3.563,
+      "p95": 5.933,
+      "p99": 5.933,
+      "max": 5.933
+     },
+     "time_to_first_part_ms": 18.003405,
+     "moves": [],
+     "caches": [
+      "lon-edge-1"
+     ],
+     "datagrams": 141530,
+     "source_datagrams": 25814,
+     "payload_bytes": 12938400,
+     "identical": 8985
+    },
+    "udp-video-4k": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 226,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 226,
+     "datagram_loss": 0.04938116782265611,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 226,
+      "p50": 61.244,
+      "p95": 102.905,
+      "p99": 144.468,
+      "max": 239.765
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 193.354,
+      "p95": 193.354,
+      "p99": 193.354,
+      "max": 193.354
+     },
+     "time_to_first_part_ms": 40.901205000000004,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 105626,
+     "source_datagrams": 83973,
+     "payload_bytes": 89909938,
+     "identical": 226
+    }
+   },
+   "hls": {
+    "hls-video-4k": {
+     "parts_received": 227,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-pcm": {
+     "parts_received": 8997,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-opus": {
+     "parts_received": 8998,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-flac": {
+     "parts_received": 9005,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    }
+   },
+   "pass": true
+  },
+  {
+   "step": "drain",
+   "loss_percent": 0.0,
+   "drained": [
+    [
+     "lon-edge-1",
+     "202",
+     1795290461.6587005
+    ]
+   ],
+   "udp": {
+    "udp-flac": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 9001,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 60,
+     "datagram_loss": 0.009438281387568234,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 9001,
+      "p50": 3.115,
+      "p95": 35.917,
+      "p99": 52.071,
+      "max": 83.769
+     },
+     "available_to_arrival_ms": {
+      "count": 2,
+      "p50": 20.415,
+      "p95": 20.415,
+      "p99": 20.415,
+      "max": 20.415
+     },
+     "time_to_first_part_ms": 11.118157,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 57282,
+     "source_datagrams": 21910,
+     "payload_bytes": 10331397,
+     "identical": 9001
+    },
+    "udp-opus": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8997,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 63,
+     "datagram_loss": 0.0,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8997,
+      "p50": 2.881,
+      "p95": 45.345,
+      "p99": 66.315,
+      "max": 115.552
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 4.068,
+      "p95": 4.068,
+      "p99": 4.068,
+      "max": 4.068
+     },
+     "time_to_first_part_ms": 19.161292,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 36100,
+     "source_datagrams": 8997,
+     "payload_bytes": 719760,
+     "identical": 8997
+    },
+    "udp-pcm": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 8999,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 63,
+     "datagram_loss": 0.008318034864263317,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 8999,
+      "p50": 2.322,
+      "p95": 38.145,
+      "p99": 54.946,
+      "max": 85.654
+     },
+     "available_to_arrival_ms": {
+      "count": 3,
+      "p50": 3.175,
+      "p95": 7.324,
+      "p99": 7.324,
+      "max": 7.324
+     },
+     "time_to_first_part_ms": 14.364488,
+     "moves": [],
+     "caches": [
+      "lon-edge-2"
+     ],
+     "datagrams": 62122,
+     "source_datagrams": 27215,
+     "payload_bytes": 12958560,
+     "identical": 8999
+    },
+    "udp-video-4k": {
+     "pass": true,
+     "problems": [],
+     "received_parts": 226,
+     "missing_parts": 0,
+     "gap_parts": 0,
+     "recovered_parts": 0,
+     "datagram_loss": 0.0,
+     "final_min_repair": 3,
+     "final_repair_permille": 250,
+     "publish_to_arrival_ms": {
+      "count": 226,
+      "p50": 44.976,
+      "p95": 77.312,
+      "p99": 127.66,
+      "max": 177.399
+     },
+     "available_to_arrival_ms": {
+      "count": 1,
+      "p50": 115.71,
+      "p95": 115.71,
+      "p99": 115.71,
+      "max": 115.71
+     },
+     "time_to_first_part_ms": 40.545908999999995,
+     "moves": [
+      {
+       "at_ms": 15595,
+       "from": "lon-edge-1",
+       "to": "lon-edge-2",
+       "reason": "draining",
+       "next_part": 839
+      }
+     ],
+     "caches": [
+      "lon-edge-1",
+      "lon-edge-2"
+     ],
+     "datagrams": 112422,
+     "source_datagrams": 91456,
+     "payload_bytes": 92531638,
+     "identical": 226
+    }
+   },
+   "hls": {
+    "hls-pcm": {
+     "parts_received": 9000,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 1,
+     "error": null
+    },
+    "hls-video-4k": {
+     "parts_received": 227,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 1,
+     "error": null
+    },
+    "hls-opus": {
+     "parts_received": 9000,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 0,
+     "error": null
+    },
+    "hls-flac": {
+     "parts_received": 9002,
+     "parts_missing": 0,
+     "stalls": 0,
+     "moves": 1,
+     "error": null
+    }
+   },
+   "pass": true
+  }
+ ],
+ "client_udp_counters": {
+  "lon-dist-b": {
+   "subscriptions": 0,
+   "refusals": 0,
+   "moves": 0,
+   "parts": 0,
+   "gaps": 0,
+   "datagrams": 0,
+   "bytes": 0,
+   "send_errors": 0,
+   "cut_through_parts": 0,
+   "cut_through_datagrams": 0,
+   "cut_through_fallbacks": 0,
+   "would_block": 0,
+   "tokens_sent": 0,
+   "bad_tokens": 0
+  },
+  "lon-edge-2": {
+   "subscriptions": 11,
+   "refusals": 0,
+   "moves": 0,
+   "parts": 14,
+   "gaps": 0,
+   "datagrams": 792327,
+   "bytes": 771312419,
+   "send_errors": 0,
+   "cut_through_parts": 72028,
+   "cut_through_datagrams": 791324,
+   "cut_through_fallbacks": 1935,
+   "would_block": 0,
+   "tokens_sent": 11,
+   "bad_tokens": 0
+  },
+  "lon-edge-1": {
+   "subscriptions": 6,
+   "refusals": 0,
+   "moves": 1,
+   "parts": 16,
+   "gaps": 0,
+   "datagrams": 638187,
+   "bytes": 617877307,
+   "send_errors": 0,
+   "cut_through_parts": 36270,
+   "cut_through_datagrams": 636996,
+   "cut_through_fallbacks": 1188,
+   "would_block": 0,
+   "tokens_sent": 6,
+   "bad_tokens": 0
+  },
+  "lon-dist-a": {
+   "subscriptions": 0,
+   "refusals": 0,
+   "moves": 0,
+   "parts": 0,
+   "gaps": 0,
+   "datagrams": 0,
+   "bytes": 0,
+   "send_errors": 0,
+   "cut_through_parts": 0,
+   "cut_through_datagrams": 0,
+   "cut_through_fallbacks": 0,
+   "would_block": 0,
+   "tokens_sent": 0,
+   "bad_tokens": 0
+  }
+ },
+ "pass": true
+}

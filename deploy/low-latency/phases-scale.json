@@ -1,0 +1,601 @@
+{
+  "schema": "needletail.scale.phases.v1",
+  "description": "Failover (F), redistribution (R) and autoscale (A) phases of the large audio mesh, each group one held step of listeners on curve 1 (five edges a region). Every scenario: a baseline, the fault at baseline_s, an observation, the restore, a settle. A kill is SIGKILL and then the unit stopped (Restart=always would bring it back in 2 s; low-latency ops D4); a crash is the SIGKILL alone, the 2 s restart (F2r). Fault sizes against five serving edges a region: at most 2 of 5 at once (D5). LL-HLS readers are needletail-reader crowds that follow steering and move; their entry points and the liveness check are nodes that no phase faults. scale-run.py run --phase-plan deploy/low-latency/phases-scale.json --group F|R|A. needs_am names what a scenario still waits for before it can pass (only F9 now: C CL7 cleared it where the resilient-mesh builds judge it). Every scenario has probes of its own on the view hosts and is scored alone by the referee's change-window.py on its own marks (C CL7); the controller runs `--until join` or `--until stopped`. deploy/low-latency/SCALE.md has the cost, the shedding order and the local proofs.",
+  "defaults": {
+    "config": "pcm-1",
+    "listeners": 6000,
+    "hls_share": 0.05,
+    "baseline_s": 60,
+    "observe_s": 90,
+    "settle_s": 30
+  },
+  "groups": {
+    "F": {
+      "listeners": 6000,
+      "hls_share": 0.05
+    },
+    "R": {
+      "listeners": 6000,
+      "hls_share": 0.05
+    },
+    "A": {
+      "listeners": 6000,
+      "hls_share": 0.0
+    }
+  },
+  "scenarios": [
+    {
+      "name": "F1",
+      "group": "F",
+      "title": "drain lon-edge-1",
+      "actions": [
+        {
+          "kind": "drain",
+          "targets": [
+            "lon-edge-1"
+          ]
+        }
+      ],
+      "expect": {
+        "missing": 0,
+        "move_share_within": 1.3,
+        "balance_after_max_over_mean": 1.15,
+        "time_to_move_p99_ms": 300
+      },
+      "needs_am": [],
+      "shed": 14
+    },
+    {
+      "name": "F2",
+      "group": "F",
+      "title": "kill new-edge-2 (node loss)",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "new-edge-2"
+          ]
+        }
+      ],
+      "expect": {
+        "time_to_move_p99_ms": 1500,
+        "time_to_move_max_ms": 3000,
+        "move_share_within": 1.3,
+        "balance_after_max_over_mean": 1.15
+      },
+      "needs_am": [],
+      "shed": 15
+    },
+    {
+      "name": "F2r",
+      "group": "F",
+      "title": "crash new-edge-3: the 2 s restart (Restart=always)",
+      "actions": [
+        {
+          "kind": "crash",
+          "targets": [
+            "new-edge-3"
+          ]
+        }
+      ],
+      "expect": {},
+      "needs_am": [],
+      "shed": 4
+    },
+    {
+      "name": "F3",
+      "group": "F",
+      "title": "drain then stop tok-dist-a (a forwarder, not the ingress)",
+      "actions": [
+        {
+          "kind": "drain",
+          "targets": [
+            "tok-dist-a"
+          ]
+        },
+        {
+          "kind": "stop",
+          "targets": [
+            "tok-dist-a"
+          ],
+          "at_s": 20
+        }
+      ],
+      "restore": [
+        {
+          "kind": "start",
+          "targets": [
+            "tok-dist-a"
+          ]
+        }
+      ],
+      "expect": {
+        "moves": 0,
+        "missing": 0
+      },
+      "needs_am": [],
+      "shed": 8
+    },
+    {
+      "name": "F4",
+      "group": "F",
+      "title": "kill tok-dist-a (node loss)",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "tok-dist-a"
+          ]
+        }
+      ],
+      "expect": {
+        "moves": 0,
+        "missing": 0
+      },
+      "needs_am": [],
+      "shed": 11
+    },
+    {
+      "name": "F5",
+      "group": "F",
+      "title": "stop the ingress lon-dist-a",
+      "actions": [
+        {
+          "kind": "stop",
+          "targets": [
+            "lon-dist-a"
+          ]
+        }
+      ],
+      "expect": {
+        "missing": 0
+      },
+      "needs_am": [],
+      "shed": 7
+    },
+    {
+      "name": "F6",
+      "group": "F",
+      "title": "kill the ingress lon-dist-a (node loss)",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-dist-a"
+          ]
+        }
+      ],
+      "expect": {
+        "missing": 0
+      },
+      "needs_am": [],
+      "shed": 10
+    },
+    {
+      "name": "F7",
+      "group": "F",
+      "title": "kill 2 of London's 5 edges at once",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-edge-2",
+            "lon-edge-3"
+          ]
+        }
+      ],
+      "expect": {
+        "time_to_move_p99_ms": 1500,
+        "time_to_move_max_ms": 3000
+      },
+      "needs_am": [],
+      "shed": 6
+    },
+    {
+      "name": "F8",
+      "group": "F",
+      "title": "kill one edge and one distributor in every region at once",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "syd-edge-4",
+            "lon-edge-4",
+            "new-edge-4",
+            "tok-edge-4",
+            "syd-dist-b",
+            "lon-dist-b",
+            "new-dist-b",
+            "tok-dist-b"
+          ]
+        }
+      ],
+      "expect": {
+        "time_to_move_p99_ms": 1500,
+        "time_to_move_max_ms": 3000
+      },
+      "needs_am": [],
+      "shed": 1
+    },
+    {
+      "name": "F9",
+      "group": "F",
+      "enabled": false,
+      "title": "lose Tokyo whole (edges and distributors): a few hundred Opus listeners resume in a neighbouring region over the public path",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "tok-edge-1",
+            "tok-edge-2",
+            "tok-edge-3",
+            "tok-edge-4",
+            "tok-edge-5",
+            "tok-dist-a",
+            "tok-dist-b"
+          ]
+        }
+      ],
+      "expect": {
+        "time_to_move_p99_ms": 3000
+      },
+      "needs_am": [
+        "public-path Opus listeners in scale-run (not built: VLAN listeners cannot leave their region)"
+      ],
+      "note": "Not run until UDP region failover (AM item 11) lands and the run has a small public-path Opus listener group; reported as an open gap. Listeners on the VLAN cannot reach another region, and 1 ms PCM over the public network is billed transfer beyond the receiving edges' egress (critique 20).",
+      "shed": 0
+    },
+    {
+      "name": "R1",
+      "group": "R",
+      "title": "a standby edge joins under load (start lon-edge-6)",
+      "actions": [
+        {
+          "kind": "join",
+          "targets": [
+            "lon-edge-6"
+          ]
+        }
+      ],
+      "restore": [],
+      "expect": {
+        "first_part_s": 20,
+        "warm_parts_pending_zero_s": 10
+      },
+      "needs_am": [],
+      "shed": 13
+    },
+    {
+      "name": "R2",
+      "group": "R",
+      "title": "drain the edge that joined (lon-edge-6), then hold it out",
+      "actions": [
+        {
+          "kind": "drain",
+          "targets": [
+            "lon-edge-6"
+          ]
+        }
+      ],
+      "restore": [
+        {
+          "kind": "leave",
+          "targets": [
+            "lon-edge-6"
+          ]
+        }
+      ],
+      "expect": {
+        "missing": 0
+      },
+      "needs_am": [],
+      "shed": 12
+    },
+    {
+      "name": "R3",
+      "group": "R",
+      "title": "kill lon-edge-5 (node loss): who takes its readers, at what cost",
+      "actions": [
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-edge-5"
+          ]
+        }
+      ],
+      "expect": {},
+      "needs_am": [],
+      "shed": 9
+    },
+    {
+      "name": "R4",
+      "group": "R",
+      "title": "lon-dist-c (created and pushed before the step, held out) joins, then is killed",
+      "actions": [
+        {
+          "kind": "join",
+          "targets": [
+            "lon-dist-c"
+          ]
+        },
+        {
+          "kind": "kill",
+          "targets": [
+            "lon-dist-c"
+          ],
+          "at_s": 120
+        }
+      ],
+      "restore": [
+        {
+          "kind": "leave",
+          "targets": [
+            "lon-dist-c"
+          ]
+        }
+      ],
+      "after_last_s": 90,
+      "expect": {
+        "parent_change_share_max": 0.77
+      },
+      "needs_am": [
+        "12"
+      ],
+      "shed": 5,
+      "note": "lon-dist-c is created and pushed before the step (lab add lon-dist-c --budget-usd ...; deploy push --nodes lon-dist-c; deploy stop --nodes lon-dist-c), about $0.11 for its two billed hours. Expect about 2/3 of the (edge, stream) pairs to change one parent when a third forwarder joins two (C 2.11)."
+    },
+    {
+      "name": "R5",
+      "group": "R",
+      "title": "catch-up storm: 2 of London's 5 edges drain at once",
+      "actions": [
+        {
+          "kind": "drain",
+          "targets": [
+            "lon-edge-2",
+            "lon-edge-3"
+          ]
+        }
+      ],
+      "expect": {
+        "largest_burst_per_tick": 100000,
+        "watermark_stall_ms": 250
+      },
+      "needs_am": [],
+      "shed": 2,
+      "note": "largest_burst_per_tick: the distributor's total warm-up cap (cache_mesh_warm_total_kbps, the binaries' 40,000 kbit/s) over one 20 ms sync tick of the cache mesh, in bytes"
+    },
+    {
+      "name": "A1",
+      "group": "A",
+      "title": "scale up: the controller alone, listeners 30% to 95% of capacity over 8 min",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "controller_args": []
+        }
+      ],
+      "restore": [],
+      "profile": [
+        [
+          0,
+          0.3
+        ],
+        [
+          480,
+          0.95
+        ]
+      ],
+      "observe_s": 570,
+      "settle_s": 0,
+      "expect": {
+        "trigger_to_fresh_s": 20
+      },
+      "needs_am": [],
+      "shed": 17,
+      "needs_settings": {
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
+        "cpu_load": "an edge load that counts its CPU (wave 9 C2: LL-HLS readers and per-listener work that bytes do not show; av-mesh's default, rendered by scale-run settings)"
+      }
+    },
+    {
+      "name": "A2",
+      "group": "A",
+      "title": "scale down: back to 20% over 8 min; the controller drains and stops (or deletes slots)",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "stopped",
+          "controller_args": []
+        }
+      ],
+      "restore": [],
+      "baseline_s": 60,
+      "profile": [
+        [
+          0,
+          0.95
+        ],
+        [
+          480,
+          0.2
+        ]
+      ],
+      "observe_s": 840,
+      "settle_s": 30,
+      "expect": {},
+      "needs_am": [],
+      "shed": 16,
+      "needs_settings": {
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
+        "cpu_load": "an edge load that counts its CPU (wave 9 C2: LL-HLS readers and per-listener work that bytes do not show; av-mesh's default, rendered by scale-run settings)"
+      }
+    },
+    {
+      "name": "A3",
+      "group": "A",
+      "title": "forwarder tier: K lowered to 6, the edges added in A1 make the controller add dist-c, and A2 drains it",
+      "actions": [
+        {
+          "kind": "autoscale",
+          "until": "join",
+          "controller_args": [
+            "--forwarders",
+            "--lease-k",
+            "6"
+          ]
+        },
+        {
+          "kind": "autoscale",
+          "until": "stopped",
+          "controller_args": [
+            "--forwarders",
+            "--lease-k",
+            "6"
+          ],
+          "after": {
+            "event": "controller_exit",
+            "timeout_s": 900
+          }
+        }
+      ],
+      "restore": [],
+      "profile": [
+        [
+          0,
+          0.3
+        ],
+        [
+          480,
+          0.95
+        ],
+        [
+          570,
+          0.95
+        ],
+        [
+          1050,
+          0.2
+        ]
+      ],
+      "observe_s": 1410,
+      "settle_s": 30,
+      "expect": {},
+      "needs_am": [
+        "12"
+      ],
+      "note": "After A1 and A2: K lowered to 6, the controller adds dist-c as the listeners rise (until its join) and drains it as they fall (until its stop).",
+      "shed": 0,
+      "needs_settings": {
+        "client_udp_datagram_capacity": "an edge load that means a full CPU: scale-run settings renders 400000 by default (--datagram-capacity) (wave 8 review: at 4 Gbit/s in bytes a full edge reads ~100 permille, the 700 trigger never fires and the 450 scale-down always would)",
+        "cpu_load": "an edge load that counts its CPU (wave 9 C2: LL-HLS readers and per-listener work that bytes do not show; av-mesh's default, rendered by scale-run settings)"
+      }
+    }
+  ],
+  "shedding": "When the run's projected end passes 345 min of the lab's life (5.75 h; the watchdog's down starts at 355 min and the lab is gone at 6.0 h): first the joins of the representative steps not yet run, then what is left of the 10 min of reruns, then curve 1's c1-opus1-mixed, then half of curve 2's steps (SCALE.md), then the scenarios, the lowest `shed` first: F8, R5, F2r, R4, F7, ... ; 0 is not run until its Phase AM work lands.",
+  "schedule": {
+    "description": "The whole large-mesh run in six billed hours, as agreed with the referee on 22 November: no Sydney (69 nodes, $7.884 an hour), the watchdog armed for 6.0 h from the lab's creation (its down starts 5 min before), the schedule ending at least margin_min before that down. Two windows run first, with the referee's own tools on this lab (A: the wave 7 audio headline; B: 4K with GSO); then the ramps and the phase groups. A fixed block is timed by estimate (minutes); a block with `run` is the scale-run.py run command (without $COST) and is timed by `scale-run.py plan` itself, which reports the total (`schedule` in plan --json). A refused core stops the run with no retry; nothing is added past this schedule. deploy/low-latency/SCALE.md has the commands.",
+    "watchdog_hours": 6.0,
+    "down_lead_min": 5,
+    "margin_min": 10,
+    "without_sites": [
+      "sydney"
+    ],
+    "blocks": [
+      {
+        "name": "bring-up",
+        "minutes": 78,
+        "what": "lab up --without-sites sydney (69 nodes, staged), bootstrap and push in the windows' settings (one edge a region, public path, GSO on), the referee's gobuild, prepare (4K indexes of clips6-full), livekit, audio and secrets, scale-run.py prepare, and the 4K clips (five rungs, 6.4 GB) onto lon-src"
+      },
+      {
+        "name": "A-headline",
+        "minutes": 23,
+        "what": "wave 7 audio headline, the referee's compare-audio.py: session scale-w7 (opus-2.5 with 1 ms Opus Custom, pcm with 1 ms PCM; about 15 min) and scale-w7-std (standard 2.5 ms Opus; about 7.5 min), lanes lkregion, nt-popus/nt-pcm (LL-HLS, -w, -h3) and nt-uc, phases baseline, joins (20 a lane) and impair (1%, 5%, burst, and the harness's 100 ms delay)"
+      },
+      {
+        "name": "B-4k-gso",
+        "minutes": 8,
+        "what": "4K with GSO, the referee's compare-run.py --lanes nt --phases throughput, rungs 2160p25, 40, 80, 160, 240 (about 80 s a rung; the sweep ends early after two rungs that reach no region whole): contributor, one edge a region, the view hosts on the public path, no simulated listeners"
+      },
+      {
+        "name": "restart-e2",
+        "minutes": 2,
+        "what": "deploy restart $(scale-run.py settings --edges-per-region 2): the VLAN, two edges a region"
+      },
+      {
+        "name": "e2-pcm-udp",
+        "edges_per_region": 2,
+        "run": "--config pcm-1 --name e2-pcm-udp --hls-share 0 --steps 100,1000,3000,4000,5000,6000,7000 --joins 0"
+      },
+      {
+        "name": "restart-c1",
+        "minutes": 2,
+        "what": "deploy restart $(scale-run.py settings): five edges a region"
+      },
+      {
+        "name": "cal",
+        "run": "--config pcm-1 --name cal --steps 100,1000,8000 --hold 30 --keep-going --force --joins 0"
+      },
+      {
+        "name": "c1-pcm-udp",
+        "run": "--config pcm-1 --name c1-pcm-udp --hls-share 0 --steps 100,1000,5000,10000,13000,16000 --joins 0"
+      },
+      {
+        "name": "c1-pcm-mixed",
+        "run": "--config pcm-1 --name c1-pcm-mixed --force --joins 0"
+      },
+      {
+        "name": "c1-opus25-mixed",
+        "run": "--config opus-2.5 --name c1-opus25-mixed --force --joins 0"
+      },
+      {
+        "name": "c1-opus25-udp",
+        "run": "--config opus-2.5 --name c1-opus25-udp --hls-share 0 --steps 100,1000,10000,20000,30000,40000 --joins 0"
+      },
+      {
+        "name": "ph-f",
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group F --scenarios F1,F2,F3,F4,F6 --name ph-f --steps 6000"
+      },
+      {
+        "name": "ph-r",
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group R --scenarios R1,R2,R3 --name ph-r --steps 6000"
+      },
+      {
+        "name": "ph-a",
+        "run": "--phase-plan deploy/low-latency/phases-scale.json --group A --scenarios A1,A2 --name ph-a --steps 6000"
+      },
+      {
+        "name": "start-standby",
+        "minutes": 1,
+        "what": "deploy start --nodes (the standby edges): ten edges a region"
+      },
+      {
+        "name": "c2-pcm-udp",
+        "second_curve": true,
+        "run": "--config pcm-1 --name c2-pcm-udp --hls-share 0 --steps 100,10000,20000,24000 --force --joins 0"
+      },
+      {
+        "name": "c2-opus25-udp",
+        "second_curve": true,
+        "run": "--config opus-2.5 --name c2-opus25-udp --hls-share 0 --steps 100,10000,40000,80000 --force --joins 0"
+      },
+      {
+        "name": "c2-opus25-mixed",
+        "second_curve": true,
+        "run": "--config opus-2.5 --name c2-opus25-mixed --steps 100,5000,20000 --force --joins 0"
+      },
+      {
+        "name": "down",
+        "minutes": 10,
+        "what": "scale-run.py stop, lab down, the VLAN and leftover check"
+      }
+    ],
+    "cuts": [
+      "1. joins only at representative steps: c1-pcm-udp's first step (100) and 10,000 (where five edges a region reach about 93% of their outbound cap at 1 ms PCM without Sydney), and the top of curve 1 (c1-opus25-udp's 40,000), plus all of (A): 3 ramp steps instead of 53, 66.6 min saved (437.7 min before any cut, 371.1 after this one)",
+      "2. reruns: 40 min (10 of phases, 30 of steps) cut to 10, 30 min saved (341.1 min)",
+      "3. C CL7 (24 Nov): every scenario has probes of its own, held long enough after its change for the referee's no-change windows (360 s at least), and R4 and A3 are enabled: the schedule grew to 421.6 min with R4 and A3 named out of it. Shed in the agreed order until it fitted: the joins of the representative steps (417.6), the 10 min of reruns (407.6), c1-opus1-mixed (395.5), half of curve 2's steps (375.8), then the scenarios F8, R5, F2r, F7 and F5 (341.3).",
+      "not cut: phases F (F1, F2, F3, F4, F6), R (R1, R2, R3), A (A1, A2), the rest of curve 1 and curve 2, and the LiveKit control"
+    ]
+  }
+}

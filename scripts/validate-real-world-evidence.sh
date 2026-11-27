@@ -251,6 +251,41 @@ for evidence in "${run_files[@]}"; do
           and (.cleanup.stopped_instances | length) == 3
           and .cleanup.contributor_remaining_running == true
           and .cleanup.persistent_disks_preserved == true
+        elif .schema == "needletail.regional-llhls-cache-features.v1" then
+          .provider == "linode"
+          and .result == "every demonstration passed at the final settings"
+          and (.demonstrations | length) >= 9
+          and ([.demonstrations[]] | all(.[];
+            .pass == true and ([.checks[]] | all(.[]; .pass == true))
+          ))
+          and ([.reader_reports[]] | all(.[];
+            .parts_missing == 0 and .underruns_with_1s_buffer == 0
+          ))
+          and .settings.cache_mesh_replication == "demand"
+          and .lab.mesh_node_type == "g6-nanode-1"
+          and .lab.distributors_and_relays_on_distinct_hosts == true
+          and .service_restarts_not_caused_by_a_demonstration == 0
+          and .cleanup.sources_stopped_before_teardown == true
+          and .cleanup.linode_instances_remaining == 0
+          and .cleanup.lab_firewall_deleted == true
+          and .cleanup.tagged_resources_remaining == 0
+          and .cleanup.watchdog_exited == true
+          and .cleanup.local_lab_state_removed == true
+        elif .schema == "needletail.edge-campaign.v1" then
+          .provider == "linode"
+          and (.scenarios | length) >= 20
+          and ([.scenarios[]] | all(.[];
+            (.result == "PASS" or .result == "GAP")
+            and (.question | type == "string")
+            and (.criterion | type == "string")
+            and ((.checks | length) >= 1)
+          ))
+          and ([.scenarios[] | select(.result == "GAP")] | all(.[]; (.gap | type == "string")))
+          and .cleanup.sources_stopped_before_teardown == true
+          and .cleanup.linode_instances_remaining == 0
+          and .cleanup.lab_firewall_deleted == true
+          and .cleanup.watchdog_exited == true
+          and .cleanup.local_lab_state_removed == true
         else
           (.raptorq_primary_path_loss | type == "object")
           and .cleanup.primary_service_active == true
@@ -734,6 +769,24 @@ for evidence in "${local_files[@]}"; do
         and .lanes.ll_hls.deadline_misses == 0
         and .cleanup.local_services_stopped == true
         and .cleanup.generated_tls_unversioned == true
+      elif .schema == "needletail.edge-campaign.v1" then
+        .provider == "local-namespaces"
+        and (.scenarios | length) >= 40
+        and ([.scenarios[]] | all(.[];
+          (.result == "PASS" or .result == "GAP" or .result == "FAIL")
+          and (.question | type == "string")
+          and (.criterion | type == "string")
+          and ((.checks | length) >= 1)
+        ))
+        and ([.scenarios[] | select(.result == "GAP")] | all(.[]; (.gap | type == "string")))
+        and (
+          if .passed == true then
+            ([.scenarios[] | select(.result == "FAIL")] | length) == 0
+          else
+            (.failed_gate | type == "string")
+          end
+        )
+        and .cleanup.local_labs_stopped == true
       else
         .passed == true
         and

@@ -1,0 +1,46 @@
+4K wave 9 (lab cmpd6, 24 Nov 2026): where the holds at 25 Mbit/s are.
+Sources: target/compare/runs/video-w9{,-hops25,-hops25-nogso} and evidence-4k9/hops-gso-{on,off}; archive ~/needletail-data/cmpd6.
+
+1. Step video-w9-hops25 (GSO on, audio off, 120 s from 07:07:24 UTC). Times in ms after the contributor packaged each part.
+   C = contributor; lon-a/b = London forwarders; new-a/b = New York forwarders; probe = new-nano LL-HLS.
+   pub-packaged us (first 50): min 0 max 1
+   late without published stamp 1
+   new-nano frames 2807 late>400ms 100
+   seq 552 lat 2693ms bytes 138369 C.sent=2 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2647 new-edge-1.committed=- new-edge-1.edge_comm=2653 probe.cache=2657 edgecommit=2653
+   seq 553 lat 2656ms bytes 131207 C.sent=1 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=34 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2614 new-edge-1.committed=- new-edge-1.edge_comm=2615 probe.cache=2616 edgecommit=2615
+   seq 554 lat 2621ms bytes 126982 C.sent=1 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2571 new-edge-1.committed=- new-edge-1.edge_comm=2572 probe.cache=2574 edgecommit=2572
+   seq 555 lat 2586ms bytes 115201 C.sent=1 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=4 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=34 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2551 new-edge-1.committed=- new-edge-1.edge_comm=2557 probe.cache=2560 edgecommit=2557
+   seq 556 lat 2551ms bytes 121661 C.sent=2 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=34 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2521 new-edge-1.committed=- new-edge-1.edge_comm=2521 probe.cache=2523 edgecommit=2521
+   seq 557 lat 2534ms bytes 142115 C.sent=2 lon-a.relay_fir=1 lon-b.relay_fir=0 lon-a.committed=4 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2473 new-edge-1.committed=- new-edge-1.edge_comm=2474 probe.cache=2476 edgecommit=2474
+   seq 558 lat 2495ms bytes 140868 C.sent=2 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2442 new-edge-1.committed=- new-edge-1.edge_comm=2444 probe.cache=2444 edgecommit=2444
+   seq 559 lat 2463ms bytes 138049 C.sent=2 lon-a.relay_fir=0 lon-b.relay_fir=1 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=36 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2407 new-edge-1.committed=- new-edge-1.edge_comm=2410 probe.cache=2415 edgecommit=2410
+   seq 560 lat 2433ms bytes 142244 C.sent=1 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2362 new-edge-1.committed=- new-edge-1.edge_comm=2364 probe.cache=2365 edgecommit=2364
+   seq 561 lat 2410ms bytes 140510 C.sent=2 lon-a.relay_fir=1 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2332 new-edge-1.committed=- new-edge-1.edge_comm=2335 probe.cache=2337 edgecommit=2335
+   seq 562 lat 2371ms bytes 141627 C.sent=2 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=4 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2305 new-edge-1.committed=- new-edge-1.edge_comm=2306 probe.cache=2312 edgecommit=2306
+   seq 563 lat 2349ms bytes 136267 C.sent=2 lon-a.relay_fir=1 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=35 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2266 new-edge-1.committed=- new-edge-1.edge_comm=2267 probe.cache=2271 edgecommit=2267
+   seq 564 lat 2309ms bytes 137841 C.sent=1 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=36 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2230 new-edge-1.committed=- new-edge-1.edge_comm=2231 probe.cache=2233 edgecommit=2231
+   seq 565 lat 2269ms bytes 134892 C.sent=1 lon-a.relay_fir=0 lon-b.relay_fir=0 lon-a.committed=3 new-a.relay_fir=- new-b.relay_fir=32 new-a.committed=- new-b.committed=34 new-edge-1.relay_fir=- new-edge-1.mesh_firs=2196 new-edge-1.committed=- new-edge-1.edge_comm=2202 probe.cache=2203 edgecommit=2202
+
+   Commit coverage of stream 1 (seq missing at each node):
+   lon-dist-a  parts committed 3260, missing runs []
+   lon-dist-b  parts committed 3260, missing runs []
+   new-dist-a  parts committed 3216, missing runs [[551, 591], [1926, 1928]]
+   new-dist-b  parts committed 3260, missing runs []
+   new-edge-1  parts committed 3001, missing runs []
+   tok-dist-a  parts committed 3260, missing runs []
+   syd-dist-a  parts committed 3260, missing runs []
+
+   new-dist-a journal: no event of any kind from 1795504056.954 to 1795504059.635 (2,680 ms).
+
+2. Sampler gaps (1 s loops that did not run) and the service's charged CPU inside them:
+   video-w9               lon-dist-a  span  313 s:  8 gaps,  13.7 s, longest 1.8 s; service  36.2 ticks/s normally,  47.8 in the gaps; node user+sys  51.4 ticks/s in the gaps
+   video-w9               lon-dist-b  span  313 s:  7 gaps,  11.7 s, longest 1.8 s; service  30.3 ticks/s normally,  50.6 in the gaps; node user+sys  64.2 ticks/s in the gaps
+   video-w9               lon-edge-1  span  313 s: 14 gaps,  25.7 s, longest 2.2 s; service  19.2 ticks/s normally,  38.6 in the gaps; node user+sys  41.8 ticks/s in the gaps
+   video-w9               new-dist-a  span  314 s: 32 gaps, 114.1 s, longest 8.0 s; service  19.1 ticks/s normally, 116.3 in the gaps; node user+sys  41.1 ticks/s in the gaps
+   video-w9               new-dist-b  span  313 s: 30 gaps,  94.3 s, longest 8.5 s; service  18.2 ticks/s normally,  83.4 in the gaps; node user+sys  30.7 ticks/s in the gaps
+   video-w9               syd-nano    span  313 s:  2 gaps,   3.8 s, longest 2.0 s; service   0.0 ticks/s normally,   0.0 in the gaps; node user+sys  17.1 ticks/s in the gaps
+   video-w9               tok-nano    span  313 s:  4 gaps,  13.8 s, longest 7.1 s; service   0.0 ticks/s normally,   0.0 in the gaps; node user+sys  17.3 ticks/s in the gaps
+   video-w9-hops25        lon-dist-a  span  144 s:  2 gaps,   3.4 s, longest 1.8 s; service  11.5 ticks/s normally,   9.9 in the gaps; node user+sys  14.3 ticks/s in the gaps
+   video-w9-hops25        new-dist-a  span  145 s:  2 gaps,   6.3 s, longest 4.3 s; service  12.4 ticks/s normally,  66.6 in the gaps; node user+sys   7.8 ticks/s in the gaps
+   video-w9-hops25        tok-view    span  145 s:  1 gaps,   1.9 s, longest 1.9 s; service   0.0 ticks/s normally,   0.0 in the gaps; node user+sys  84.1 ticks/s in the gaps
+   Every other mesh node: no gap over 1.6 s. video-w9-hops25-nogso (GSO off, 60 s): no gap on any node.

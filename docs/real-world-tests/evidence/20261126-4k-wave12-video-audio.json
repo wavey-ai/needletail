@@ -1,0 +1,1176 @@
+{
+ "schema": "video-audio-score.v1",
+ "rows": [
+  {
+   "session": "video-w12",
+   "rung": "2160p80",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795658496,
+   "step_started_unix": 1795658499.3656528,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.47,
+    "mouth_to_ear_p99_ms": 7.52,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.43,
+    "mouth_to_ear_p99_ms": 5.19,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p80",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795658496,
+   "step_started_unix": 1795658499.3656528,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0009,
+    "longest_gap_ms": 1.0,
+    "mouth_to_ear_p50_ms": 32.34,
+    "mouth_to_ear_p99_ms": 41.02,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 31.99,
+    "mouth_to_ear_p99_ms": 37.5,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p80",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795658496,
+   "step_started_unix": 1795658499.3656528,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 110.48,
+    "mouth_to_ear_p99_ms": 119.88,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 108.56,
+    "mouth_to_ear_p99_ms": 112.61,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p80",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795658496,
+   "step_started_unix": 1795658499.3656528,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 125.91,
+    "mouth_to_ear_p99_ms": 137.26,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 125.4,
+    "mouth_to_ear_p99_ms": 129.73,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p160",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795658752,
+   "step_started_unix": 1795658755.3568838,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.63,
+    "mouth_to_ear_p99_ms": 9.77,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.55,
+    "mouth_to_ear_p99_ms": 7.21,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p160",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795658752,
+   "step_started_unix": 1795658755.3568838,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 32.85,
+    "mouth_to_ear_p99_ms": 58.35,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 32.26,
+    "mouth_to_ear_p99_ms": 38.3,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p160",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795658752,
+   "step_started_unix": 1795658755.3568838,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 111.71,
+    "mouth_to_ear_p99_ms": 167.47,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 108.75,
+    "mouth_to_ear_p99_ms": 114.47,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p160",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795658752,
+   "step_started_unix": 1795658755.3568838,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.51,
+    "mouth_to_ear_p99_ms": 139.43,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 125.64,
+    "mouth_to_ear_p99_ms": 131.46,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p240",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795659008,
+   "step_started_unix": 1795659011.3551896,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0018,
+    "longest_gap_ms": 2.0,
+    "mouth_to_ear_p50_ms": 2.6,
+    "mouth_to_ear_p99_ms": 646.71,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.7,
+    "mouth_to_ear_p99_ms": 5.84,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p240",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795659008,
+   "step_started_unix": 1795659011.3551896,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 34.46,
+    "mouth_to_ear_p99_ms": 222.87,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 33.0,
+    "mouth_to_ear_p99_ms": 39.46,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p240",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795659008,
+   "step_started_unix": 1795659011.3551896,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 112.28,
+    "mouth_to_ear_p99_ms": 150.94,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 109.19,
+    "mouth_to_ear_p99_ms": 114.12,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p240",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795659008,
+   "step_started_unix": 1795659011.3551896,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0036,
+    "longest_gap_ms": 3.0,
+    "mouth_to_ear_p50_ms": 127.53,
+    "mouth_to_ear_p99_ms": 149.4,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.27,
+    "mouth_to_ear_p99_ms": 131.45,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p320",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795659264,
+   "step_started_unix": 1795659267.3842833,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 2.73,
+    "mouth_to_ear_p99_ms": 24.87,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.95,
+    "mouth_to_ear_p99_ms": 9.36,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p320",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795659264,
+   "step_started_unix": 1795659267.3842833,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2",
+    "syd-edge-1",
+    "syd-edge-2",
+    "tok-edge-1"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 36.51,
+    "mouth_to_ear_p99_ms": 378.53,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 33.81,
+    "mouth_to_ear_p99_ms": 41.31,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p320",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795659264,
+   "step_started_unix": 1795659267.3842833,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": null,
+    "longest_gap_ms": null,
+    "mouth_to_ear_p50_ms": null,
+    "mouth_to_ear_p99_ms": null,
+    "error": "playlist: HTTP 429"
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 109.73,
+    "mouth_to_ear_p99_ms": 116.32,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12",
+   "rung": "2160p320",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795659264,
+   "step_started_unix": 1795659267.3842833,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0009,
+    "longest_gap_ms": 1.0,
+    "mouth_to_ear_p50_ms": 139.08,
+    "mouth_to_ear_p99_ms": 4194.41,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.77,
+    "mouth_to_ear_p99_ms": 133.42,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-soak",
+   "rung": "2160p240",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795659456,
+   "step_started_unix": 1795659459.371502,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2",
+    "syd-edge-1",
+    "syd-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 2.48,
+    "mouth_to_ear_p99_ms": 21.44,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.79,
+    "mouth_to_ear_p99_ms": 9.29,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-soak",
+   "rung": "2160p240",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795659456,
+   "step_started_unix": 1795659459.371502,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0003,
+    "longest_gap_ms": 1.0,
+    "mouth_to_ear_p50_ms": 34.6,
+    "mouth_to_ear_p99_ms": 56.23,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 33.35,
+    "mouth_to_ear_p99_ms": 41.95,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-soak",
+   "rung": "2160p240",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795659456,
+   "step_started_unix": 1795659459.371502,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": null,
+    "longest_gap_ms": null,
+    "mouth_to_ear_p50_ms": null,
+    "mouth_to_ear_p99_ms": null,
+    "error": "playlist: HTTP 429"
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 109.12,
+    "mouth_to_ear_p99_ms": 117.05,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-soak",
+   "rung": "2160p240",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795659456,
+   "step_started_unix": 1795659459.371502,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 127.36,
+    "mouth_to_ear_p99_ms": 141.59,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.31,
+    "mouth_to_ear_p99_ms": 133.76,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-stagger",
+   "rung": "2160p240",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795660480,
+   "step_started_unix": 1795660483.3642652,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 2.0,
+    "mouth_to_ear_p99_ms": 11.26,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.81,
+    "mouth_to_ear_p99_ms": 6.62,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-stagger",
+   "rung": "2160p240",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795660480,
+   "step_started_unix": 1795660483.3642652,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2",
+    "tok-edge-1"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 34.8,
+    "mouth_to_ear_p99_ms": 64.36,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 33.37,
+    "mouth_to_ear_p99_ms": 40.06,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-stagger",
+   "rung": "2160p240",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795660480,
+   "step_started_unix": 1795660483.3642652,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-2",
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 112.66,
+    "mouth_to_ear_p99_ms": 145.32,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 109.19,
+    "mouth_to_ear_p99_ms": 114.44,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-stagger",
+   "rung": "2160p240",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795660480,
+   "step_started_unix": 1795660483.3642652,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": true,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 128.36,
+    "mouth_to_ear_p99_ms": 187.44,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.54,
+    "mouth_to_ear_p99_ms": 132.09,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-held",
+   "rung": "2160p240",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795659840,
+   "step_started_unix": 1795659843.3607337,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 3.32,
+    "mouth_to_ear_p99_ms": 1119.59,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.84,
+    "mouth_to_ear_p99_ms": 7.43,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-held",
+   "rung": "2160p240",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795659840,
+   "step_started_unix": 1795659843.3607337,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 34.83,
+    "mouth_to_ear_p99_ms": 66.41,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 33.32,
+    "mouth_to_ear_p99_ms": 40.64,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-held",
+   "rung": "2160p240",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795659840,
+   "step_started_unix": 1795659843.3607337,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 112.92,
+    "mouth_to_ear_p99_ms": 201.61,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 109.15,
+    "mouth_to_ear_p99_ms": 114.77,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-held",
+   "rung": "2160p240",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795659840,
+   "step_started_unix": 1795659843.3607337,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 127.97,
+    "mouth_to_ear_p99_ms": 230.59,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.27,
+    "mouth_to_ear_p99_ms": 131.74,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-repair",
+   "rung": "2160p240",
+   "site": "lon",
+   "audio": "pcm",
+   "audio_start_unix": 1795660928,
+   "step_started_unix": 1795660931.3576307,
+   "video_whole": true,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": true
+   },
+   "video_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_edges": [
+    "lon-edge-1",
+    "lon-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 6.01,
+    "mouth_to_ear_p99_ms": 801.65,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 1.53,
+    "mouth_to_ear_p99_ms": 7.17,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-repair",
+   "rung": "2160p240",
+   "site": "new",
+   "audio": "pcm",
+   "audio_start_unix": 1795660928,
+   "step_started_unix": 1795660931.3576307,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_edges": [
+    "new-edge-1",
+    "new-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 35.81,
+    "mouth_to_ear_p99_ms": 82.56,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 33.97,
+    "mouth_to_ear_p99_ms": 42.69,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-repair",
+   "rung": "2160p240",
+   "site": "tok",
+   "audio": "pcm",
+   "audio_start_unix": 1795660928,
+   "step_started_unix": 1795660931.3576307,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_edges": [
+    "tok-edge-1",
+    "tok-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 112.96,
+    "mouth_to_ear_p99_ms": 285.37,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 111.61,
+    "mouth_to_ear_p99_ms": 118.23,
+    "error": null
+   }
+  },
+  {
+   "session": "video-w12-repair",
+   "rung": "2160p240",
+   "site": "syd",
+   "audio": "pcm",
+   "audio_start_unix": 1795660928,
+   "step_started_unix": 1795660931.3576307,
+   "video_whole": false,
+   "video_whole_by_mode": {
+    "probe": false,
+    "probe.uc": false
+   },
+   "video_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_edges": [
+    "syd-edge-1",
+    "syd-edge-2"
+   ],
+   "audio_udp_on_a_4k_edge": true,
+   "nt-pcm": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 128.7,
+    "mouth_to_ear_p99_ms": 169.82,
+    "error": null
+   },
+   "nt-uc": {
+    "missing_percent": 0.0,
+    "longest_gap_ms": 0.0,
+    "mouth_to_ear_p50_ms": 126.99,
+    "mouth_to_ear_p99_ms": 132.95,
+    "error": null
+   }
+  }
+ ]
+}

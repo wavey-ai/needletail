@@ -1,0 +1,789 @@
+{
+ "step": "nt.throughput.2160p240",
+ "session_seconds": 100,
+ "windows_unix": [
+  [
+   1795659843.3603427,
+   1795659943.3604577
+  ],
+  [
+   1795659944.0827506,
+   1795660043.3605785
+  ],
+  [
+   1795660044.0704274,
+   1795660150.8607337
+  ]
+ ],
+ "restarts": [
+  {
+   "session": 2,
+   "stopped_unix": 1795659943.3604577,
+   "started_unix": 1795659944.0827506,
+   "sender_running": true
+  },
+  {
+   "session": 3,
+   "stopped_unix": 1795660043.3605785,
+   "started_unix": 1795660044.0704274,
+   "sender_running": true
+  }
+ ],
+ "sessions": [
+  {
+   "session": 1,
+   "start_unix": 1795659843.3603427,
+   "end_unix": 1795659943.3604577,
+   "regions": {
+    "lon": {
+     "probes": {
+      "lon-view:probe.uc": {
+       "rows": 2397,
+       "frames_expected": 2201,
+       "frames_missing": 0,
+       "frames_late": 66,
+       "frames_undecodable": 0,
+       "on_time_percent": 97.001,
+       "longest_stall_ms": 795,
+       "stalls": 3,
+       "latency_ms": {
+        "n": 2201,
+        "min": 27.9,
+        "p50": 52.2,
+        "p95": 148.1,
+        "p99": 417.7,
+        "max": 1096.9
+       },
+       "window_s": 91.7,
+       "error": null
+      },
+      "lon-view:probe": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": null,
+       "window_s": null,
+       "error": "playlist: HTTP 429"
+      },
+      "lon-nano:probe.uc": {
+       "rows": 2397,
+       "frames_expected": 2201,
+       "frames_missing": 0,
+       "frames_late": 181,
+       "frames_undecodable": 0,
+       "on_time_percent": 91.776,
+       "longest_stall_ms": 2637,
+       "stalls": 5,
+       "latency_ms": {
+        "n": 2201,
+        "min": 27.1,
+        "p50": 57.6,
+        "p95": 465.5,
+        "p99": 751.7,
+        "max": 2944.2
+       },
+       "window_s": 91.7,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "new": {
+     "probes": {
+      "new-view:probe.uc": {
+       "rows": 2400,
+       "frames_expected": 2206,
+       "frames_missing": 0,
+       "frames_late": 34,
+       "frames_undecodable": 0,
+       "on_time_percent": 98.459,
+       "longest_stall_ms": 116,
+       "stalls": 3,
+       "latency_ms": {
+        "n": 2206,
+        "min": 57.9,
+        "p50": 83.8,
+        "p95": 166.1,
+        "p99": 371.4,
+        "max": 449.3
+       },
+       "window_s": 91.9,
+       "error": null
+      },
+      "new-view:probe": {
+       "rows": 2337,
+       "frames_expected": 2143,
+       "frames_missing": 0,
+       "frames_late": 85,
+       "frames_undecodable": 0,
+       "on_time_percent": 96.034,
+       "longest_stall_ms": 772,
+       "stalls": 7,
+       "latency_ms": {
+        "n": 2143,
+        "min": 61.5,
+        "p50": 89.5,
+        "p95": 309.0,
+        "p99": 731.6,
+        "max": 1111.3
+       },
+       "window_s": 89.3,
+       "error": null
+      },
+      "new-nano:probe.uc": {
+       "rows": 2400,
+       "frames_expected": 2205,
+       "frames_missing": 0,
+       "frames_late": 36,
+       "frames_undecodable": 0,
+       "on_time_percent": 98.367,
+       "longest_stall_ms": 138,
+       "stalls": 3,
+       "latency_ms": {
+        "n": 2205,
+        "min": 58.4,
+        "p50": 87.1,
+        "p95": 177.4,
+        "p99": 375.3,
+        "max": 474.9
+       },
+       "window_s": 91.9,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "tok": {
+     "probes": {
+      "tok-view:probe.uc": {
+       "rows": 2394,
+       "frames_expected": 2198,
+       "frames_missing": 0,
+       "frames_late": 34,
+       "frames_undecodable": 0,
+       "on_time_percent": 98.453,
+       "longest_stall_ms": 112,
+       "stalls": 2,
+       "latency_ms": {
+        "n": 2198,
+        "min": 136.3,
+        "p50": 159.2,
+        "p95": 239.8,
+        "p99": 447.8,
+        "max": 521.7
+       },
+       "window_s": 91.6,
+       "error": null
+      },
+      "tok-view:probe": {
+       "rows": 2345,
+       "frames_expected": 2143,
+       "frames_missing": 0,
+       "frames_late": 214,
+       "frames_undecodable": 0,
+       "on_time_percent": 90.014,
+       "longest_stall_ms": 1820,
+       "stalls": 9,
+       "latency_ms": {
+        "n": 2143,
+        "min": 136.6,
+        "p50": 166.9,
+        "p95": 803.8,
+        "p99": 1559.7,
+        "max": 2236.7
+       },
+       "window_s": 89.3,
+       "error": null
+      },
+      "tok-nano:probe.uc": {
+       "rows": 2394,
+       "frames_expected": 2198,
+       "frames_missing": 0,
+       "frames_late": 33,
+       "frames_undecodable": 0,
+       "on_time_percent": 98.499,
+       "longest_stall_ms": 118,
+       "stalls": 1,
+       "latency_ms": {
+        "n": 2198,
+        "min": 138.3,
+        "p50": 163.2,
+        "p95": 247.7,
+        "p99": 452.8,
+        "max": 531.6
+       },
+       "window_s": 91.6,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "syd": {
+     "probes": {
+      "syd-view:probe.uc": {
+       "rows": 2392,
+       "frames_expected": 2197,
+       "frames_missing": 0,
+       "frames_late": 74,
+       "frames_undecodable": 0,
+       "on_time_percent": 96.632,
+       "longest_stall_ms": 183,
+       "stalls": 3,
+       "latency_ms": {
+        "n": 2197,
+        "min": 156.6,
+        "p50": 178.9,
+        "p95": 393.1,
+        "p99": 555.7,
+        "max": 612.1
+       },
+       "window_s": 91.5,
+       "error": null
+      },
+      "syd-view:probe": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": null,
+       "window_s": null,
+       "error": "playlist: HTTP 429"
+      },
+      "syd-nano:probe.uc": {
+       "rows": 2392,
+       "frames_expected": 2197,
+       "frames_missing": 0,
+       "frames_late": 34,
+       "frames_undecodable": 0,
+       "on_time_percent": 98.452,
+       "longest_stall_ms": 116,
+       "stalls": 1,
+       "latency_ms": {
+        "n": 2197,
+        "min": 156.6,
+        "p50": 180.9,
+        "p95": 267.2,
+        "p99": 468.4,
+        "max": 547.3
+       },
+       "window_s": 91.6,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    }
+   }
+  },
+  {
+   "session": 2,
+   "start_unix": 1795659944.0827506,
+   "end_unix": 1795660043.3605785,
+   "regions": {
+    "lon": {
+     "probes": {
+      "lon-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 1096.94,
+        "min": 27.88,
+        "p50": 52.14,
+        "p95": 145.6,
+        "p99": 416.61
+       },
+       "window_s": null,
+       "error": null
+      },
+      "lon-view:probe": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": null,
+       "window_s": null,
+       "error": "playlist: HTTP 429"
+      },
+      "lon-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 2944.17,
+        "min": 27.07,
+        "p50": 57.27,
+        "p95": 461.2,
+        "p99": 749.48
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "new": {
+     "probes": {
+      "new-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 449.34,
+        "min": 57.86,
+        "p50": 83.67,
+        "p95": 160.54,
+        "p99": 369.27
+       },
+       "window_s": null,
+       "error": null
+      },
+      "new-view:probe": {
+       "rows": 2289,
+       "frames_expected": 2085,
+       "frames_missing": 0,
+       "frames_late": 0,
+       "frames_undecodable": 0,
+       "on_time_percent": 100.0,
+       "longest_stall_ms": 0,
+       "stalls": 0,
+       "latency_ms": {
+        "n": 2085,
+        "min": 64.8,
+        "p50": 87.7,
+        "p95": 126.2,
+        "p99": 162.1,
+        "max": 213.9
+       },
+       "window_s": 86.9,
+       "error": null
+      },
+      "new-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 474.87,
+        "min": 58.36,
+        "p50": 87.03,
+        "p95": 172.62,
+        "p99": 372.13
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "tok": {
+     "probes": {
+      "tok-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 521.65,
+        "min": 136.29,
+        "p50": 159.05,
+        "p95": 235.59,
+        "p99": 445.92
+       },
+       "window_s": null,
+       "error": null
+      },
+      "tok-view:probe": {
+       "rows": 2289,
+       "frames_expected": 2085,
+       "frames_missing": 0,
+       "frames_late": 0,
+       "frames_undecodable": 0,
+       "on_time_percent": 100.0,
+       "longest_stall_ms": 0,
+       "stalls": 0,
+       "latency_ms": {
+        "n": 2085,
+        "min": 136.7,
+        "p50": 161.7,
+        "p95": 187.7,
+        "p99": 219.7,
+        "max": 372.6
+       },
+       "window_s": 86.9,
+       "error": null
+      },
+      "tok-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 531.63,
+        "min": 138.27,
+        "p50": 163.11,
+        "p95": 240.76,
+        "p99": 452.64
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "syd": {
+     "probes": {
+      "syd-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 612.14,
+        "min": 156.64,
+        "p50": 178.79,
+        "p95": 388.08,
+        "p99": 552.52
+       },
+       "window_s": null,
+       "error": null
+      },
+      "syd-view:probe": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": null,
+       "window_s": null,
+       "error": "playlist: HTTP 429"
+      },
+      "syd-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 547.3,
+        "min": 156.56,
+        "p50": 180.79,
+        "p95": 265.26,
+        "p99": 465.74
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    }
+   }
+  },
+  {
+   "session": 3,
+   "start_unix": 1795660044.0704274,
+   "end_unix": 1795660150.8607337,
+   "regions": {
+    "lon": {
+     "probes": {
+      "lon-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 1096.94,
+        "min": 27.88,
+        "p50": 52.14,
+        "p95": 145.6,
+        "p99": 416.61
+       },
+       "window_s": null,
+       "error": null
+      },
+      "lon-view:probe": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": null,
+       "window_s": null,
+       "error": "playlist: HTTP 429"
+      },
+      "lon-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 2944.17,
+        "min": 27.07,
+        "p50": 57.27,
+        "p95": 461.2,
+        "p99": 749.48
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "new": {
+     "probes": {
+      "new-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 449.34,
+        "min": 57.86,
+        "p50": 83.67,
+        "p95": 160.54,
+        "p99": 369.27
+       },
+       "window_s": null,
+       "error": null
+      },
+      "new-view:probe": {
+       "rows": 2226,
+       "frames_expected": 2088,
+       "frames_missing": 110,
+       "frames_late": 37,
+       "frames_undecodable": 0,
+       "on_time_percent": 92.96,
+       "longest_stall_ms": 5198,
+       "stalls": 1,
+       "latency_ms": {
+        "n": 1978,
+        "min": 63.1,
+        "p50": 87.4,
+        "p95": 137.8,
+        "p99": 628.1,
+        "max": 952.0
+       },
+       "window_s": 87.0,
+       "error": null
+      },
+      "new-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 474.87,
+        "min": 58.36,
+        "p50": 87.03,
+        "p95": 172.62,
+        "p99": 372.13
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "tok": {
+     "probes": {
+      "tok-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 521.65,
+        "min": 136.29,
+        "p50": 159.05,
+        "p95": 235.59,
+        "p99": 445.92
+       },
+       "window_s": null,
+       "error": null
+      },
+      "tok-view:probe": {
+       "rows": 2232,
+       "frames_expected": 2093,
+       "frames_missing": 144,
+       "frames_late": 106,
+       "frames_undecodable": 0,
+       "on_time_percent": 88.055,
+       "longest_stall_ms": 5192,
+       "stalls": 4,
+       "latency_ms": {
+        "n": 1949,
+        "min": 141.0,
+        "p50": 166.5,
+        "p95": 472.3,
+        "p99": 1084.7,
+        "max": 1477.5
+       },
+       "window_s": 87.2,
+       "error": null
+      },
+      "tok-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 531.63,
+        "min": 138.27,
+        "p50": 163.11,
+        "p95": 240.76,
+        "p99": 452.64
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    },
+    "syd": {
+     "probes": {
+      "syd-view:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 612.14,
+        "min": 156.64,
+        "p50": 178.79,
+        "p95": 388.08,
+        "p99": 552.52
+       },
+       "window_s": null,
+       "error": null
+      },
+      "syd-view:probe": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": null,
+       "window_s": null,
+       "error": "playlist: HTTP 429"
+      },
+      "syd-nano:probe.uc": {
+       "rows": 0,
+       "frames_expected": null,
+       "frames_missing": null,
+       "frames_late": null,
+       "frames_undecodable": null,
+       "on_time_percent": null,
+       "longest_stall_ms": null,
+       "stalls": null,
+       "latency_ms": {
+        "max": 547.3,
+        "min": 156.56,
+        "p50": 180.79,
+        "p95": 265.26,
+        "p99": 465.74
+       },
+       "window_s": null,
+       "error": null
+      }
+     },
+     "udp_whole": false,
+     "udp_whole_both": false
+    }
+   }
+  }
+ ]
+}

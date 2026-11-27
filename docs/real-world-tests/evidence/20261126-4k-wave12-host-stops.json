@@ -1,0 +1,975 @@
+{
+ "schema": "host-stops.v1",
+ "sessions": {
+  "video-w12": {
+   "session": "video-w12",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "nt.idle.before-2160p160": {
+     "started_unix": 1795658625.0947626,
+     "seconds": 60.0,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "nt.idle.before-2160p240": {
+     "started_unix": 1795658882.1287417,
+     "seconds": 60.0,
+     "hosts": {
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 20.5,
+       "worst_at_unix": 1795658893.913
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "nt.idle.before-2160p320": {
+     "started_unix": 1795659140.590903,
+     "seconds": 60.0,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "nt.throughput.2160p160": {
+     "started_unix": 1795658755.3568838,
+     "seconds": 125.3,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 2,
+       "worst_ms": 24.3,
+       "worst_at_unix": 1795658784.087
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 13,
+       "worst_ms": 122.0,
+       "worst_at_unix": 1795658873.694
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 22.8,
+       "worst_at_unix": 1795658814.405
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "nt.throughput.2160p240": {
+     "started_unix": 1795659011.3551896,
+     "seconds": 127.8,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 20.2,
+       "worst_at_unix": 1795659077.361
+      },
+      "lon-nano": {
+       "class": "measurement",
+       "stops": 5,
+       "worst_ms": 501.9,
+       "worst_at_unix": 1795659103.767
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 13,
+       "worst_ms": 352.4,
+       "worst_at_unix": 1795659113.092
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 91.8,
+       "worst_at_unix": 1795659044.966
+      },
+      "tok-dist-b": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 22.7,
+       "worst_at_unix": 1795659134.2
+      },
+      "tok-nano": {
+       "class": "measurement",
+       "stops": 3,
+       "worst_ms": 30.2,
+       "worst_at_unix": 1795659132.598
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "nt.throughput.2160p320": {
+     "started_unix": 1795659267.3842833,
+     "seconds": 128.2,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 20.8,
+       "worst_at_unix": 1795659375.221
+      },
+      "lon-view": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 30.3,
+       "worst_at_unix": 1795659375.441
+      },
+      "new-dist-a": {
+       "class": "under test",
+       "stops": 2,
+       "worst_ms": 215.9,
+       "worst_at_unix": 1795659278.756
+      },
+      "new-edge-1": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 244.6,
+       "worst_at_unix": 1795659326.682
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 21.8,
+       "worst_at_unix": 1795659390.613
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 324.7,
+       "worst_at_unix": 1795659384.014
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 6,
+       "worst_ms": 781.4,
+       "worst_at_unix": 1795659368.896
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "nt.throughput.2160p80": {
+     "started_unix": 1795658499.3656528,
+     "seconds": 124.3,
+     "hosts": {
+      "new-edge-2": {
+       "class": "under test",
+       "stops": 2,
+       "worst_ms": 22.5,
+       "worst_at_unix": 1795658568.454
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 23.7,
+       "worst_at_unix": 1795658615.543
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 10,
+       "worst_ms": 110.5,
+       "worst_at_unix": 1795658575.974
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "video-w12-soak": {
+   "session": "video-w12-soak",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "nt.throughput.2160p240": {
+     "started_unix": 1795659459.371502,
+     "seconds": 316.1,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 20.4,
+       "worst_at_unix": 1795659729.211
+      },
+      "new-edge-1": {
+       "class": "under test",
+       "stops": 5,
+       "worst_ms": 49.5,
+       "worst_at_unix": 1795659611.155
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 21.3,
+       "worst_at_unix": 1795659554.131
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 13,
+       "worst_ms": 269.8,
+       "worst_at_unix": 1795659665.205
+      },
+      "syd-dist-a": {
+       "class": "under test",
+       "stops": 2,
+       "worst_ms": 22.4,
+       "worst_at_unix": 1795659638.748
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 3,
+       "worst_ms": 84.7,
+       "worst_at_unix": 1795659655.913
+      },
+      "tok-lk": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 30.9,
+       "worst_at_unix": 1795659572.834
+      },
+      "tok-view": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 323.6,
+       "worst_at_unix": 1795659687.216
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "video-w12-stagger": {
+   "session": "video-w12-stagger",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "nt.throughput.2160p240": {
+     "started_unix": 1795660483.3642652,
+     "seconds": 319.3,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 20.0,
+       "worst_at_unix": 1795660495.411
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 20.6,
+       "worst_at_unix": 1795660757.452
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 27,
+       "worst_ms": 458.9,
+       "worst_at_unix": 1795660785.184
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 8,
+       "worst_ms": 73.5,
+       "worst_at_unix": 1795660605.081
+      },
+      "tok-dist-a": {
+       "class": "under test",
+       "stops": 2,
+       "worst_ms": 25.7,
+       "worst_at_unix": 1795660632.509
+      },
+      "tok-edge-1": {
+       "class": "under test",
+       "stops": 3,
+       "worst_ms": 31.7,
+       "worst_at_unix": 1795660504.34
+      },
+      "tok-nano": {
+       "class": "measurement",
+       "stops": 3,
+       "worst_ms": 30.9,
+       "worst_at_unix": 1795660564.251
+      },
+      "tok-view": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 25.8,
+       "worst_at_unix": 1795660691.676
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "video-w12-held": {
+   "session": "video-w12-held",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "nt.throughput.2160p240": {
+     "started_unix": 1795659843.3607337,
+     "seconds": 307.5,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 4,
+       "worst_ms": 31.8,
+       "worst_at_unix": 1795659912.064
+      },
+      "lon-dist-b": {
+       "class": "under test",
+       "stops": 4,
+       "worst_ms": 46.6,
+       "worst_at_unix": 1795660016.649
+      },
+      "lon-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 79.1,
+       "worst_at_unix": 1795660129.223
+      },
+      "new-dist-a": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 20.6,
+       "worst_at_unix": 1795659977.119
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 4,
+       "worst_ms": 21.7,
+       "worst_at_unix": 1795659868.001
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 8,
+       "worst_ms": 178.5,
+       "worst_at_unix": 1795659892.568
+      },
+      "tok-dist-a": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 21.9,
+       "worst_at_unix": 1795659876.175
+      },
+      "tok-dist-b": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 23.7,
+       "worst_at_unix": 1795659983.044
+      },
+      "tok-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 29.8,
+       "worst_at_unix": 1795659899.766
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "video-w12-lk": {
+   "session": "video-w12-lk",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "lkregion.throughput.2160p120": {
+     "started_unix": 1795660326.8644686,
+     "seconds": 62.4,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "lkregion.throughput.2160p40": {
+     "started_unix": 1795660181.406814,
+     "seconds": 62.5,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "lkregion.throughput.2160p80": {
+     "started_unix": 1795660254.1563506,
+     "seconds": 62.4,
+     "hosts": {
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 21.6,
+       "worst_at_unix": 1795660268.759
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "video-w12-repair": {
+   "session": "video-w12-repair",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "nt.throughput.2160p240": {
+     "started_unix": 1795660931.3576307,
+     "seconds": 127.5,
+     "hosts": {
+      "lon-dist-a": {
+       "class": "under test",
+       "stops": 3,
+       "worst_ms": 29.1,
+       "worst_at_unix": 1795660970.191
+      },
+      "syd-edge-1": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 21.8,
+       "worst_at_unix": 1795660950.145
+      },
+      "syd-view": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 20.5,
+       "worst_at_unix": 1795661052.01
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "waudio12": {
+   "session": "waudio12",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "audio.opus-2.5.baseline.clean": {
+     "started_unix": 1795657485.2089884,
+     "seconds": 71.2,
+     "hosts": {
+      "lon-src": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 20.6,
+       "worst_at_unix": 1795657511.333
+      },
+      "new-lk": {
+       "class": "under test",
+       "stops": 1,
+       "worst_ms": 22.5,
+       "worst_at_unix": 1795657526.85
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 25.8,
+       "worst_at_unix": 1795657487.454
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 3,
+       "worst_ms": 49.2,
+       "worst_at_unix": 1795657485.637
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 25.6,
+       "worst_at_unix": 1795657537.553
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.opus-2.5.impair.burst": {
+     "started_unix": 1795657776.1123865,
+     "seconds": 48.9,
+     "hosts": {
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 26.4,
+       "worst_at_unix": 1795657806.444
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.opus-2.5.impair.delay100": {
+     "started_unix": 1795657825.197589,
+     "seconds": 46.1,
+     "hosts": {
+      "tok-dist-b": {
+       "class": "under test",
+       "stops": 5,
+       "worst_ms": 51.2,
+       "worst_at_unix": 1795657834.81
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.opus-2.5.impair.loss1": {
+     "started_unix": 1795657674.8818555,
+     "seconds": 51.2,
+     "hosts": {
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 24.7,
+       "worst_at_unix": 1795657706.962
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.opus-2.5.impair.loss5": {
+     "started_unix": 1795657726.3279102,
+     "seconds": 49.6,
+     "hosts": {
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 27.0,
+       "worst_at_unix": 1795657748.274
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 24.4,
+       "worst_at_unix": 1795657752.608
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.opus-2.5.joins.20": {
+     "started_unix": 1795657556.5736296,
+     "seconds": 118.1,
+     "hosts": {
+      "new-view": {
+       "class": "measurement",
+       "stops": 3,
+       "worst_ms": 31.4,
+       "worst_at_unix": 1795657560.462
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 57.1,
+       "worst_at_unix": 1795657665.64
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.pcm.baseline.clean": {
+     "started_unix": 1795657932.6477573,
+     "seconds": 63.9,
+     "hosts": {
+      "new-lk": {
+       "class": "under test",
+       "stops": 2,
+       "worst_ms": 22.4,
+       "worst_at_unix": 1795657943.578
+      },
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 32.9,
+       "worst_at_unix": 1795657985.713
+      },
+      "new-view": {
+       "class": "measurement",
+       "stops": 29,
+       "worst_ms": 9965.6,
+       "worst_at_unix": 1795657976.112
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.pcm.impair.burst": {
+     "started_unix": 1795658196.6458743,
+     "seconds": 38.5,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.pcm.impair.delay100": {
+     "started_unix": 1795658235.386118,
+     "seconds": 38.1,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.pcm.impair.loss1": {
+     "started_unix": 1795658119.116303,
+     "seconds": 38.6,
+     "hosts": {},
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.pcm.impair.loss5": {
+     "started_unix": 1795658157.914382,
+     "seconds": 38.5,
+     "hosts": {
+      "new-nano": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 35.3,
+       "worst_at_unix": 1795658179.754
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    },
+    "audio.pcm.joins.20": {
+     "started_unix": 1795657996.7475607,
+     "seconds": 122.2,
+     "hosts": {
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 2,
+       "worst_ms": 89.2,
+       "worst_at_unix": 1795658111.752
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "waudio12-std": {
+   "session": "waudio12-std",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "audio.opus-2.5.baseline.clean": {
+     "started_unix": 1795658380.589598,
+     "seconds": 63.1,
+     "hosts": {
+      "new-view": {
+       "class": "measurement",
+       "stops": 4,
+       "worst_ms": 273.3,
+       "worst_at_unix": 1795658412.267
+      }
+     },
+     "hosts_without_heartbeat_cover": []
+    }
+   }
+  },
+  "crowd-w12": {
+   "session": "crowd-w12",
+   "threshold_ms": 20.0,
+   "heartbeat_hosts": [
+    "contrib-lon",
+    "lk-redis",
+    "lon-dist-a",
+    "lon-dist-b",
+    "lon-edge-1",
+    "lon-edge-2",
+    "lon-lk",
+    "lon-nano",
+    "lon-src",
+    "lon-view",
+    "new-dist-a",
+    "new-dist-b",
+    "new-edge-1",
+    "new-edge-2",
+    "new-lk",
+    "new-nano",
+    "new-view",
+    "syd-dist-a",
+    "syd-dist-b",
+    "syd-edge-1",
+    "syd-edge-2",
+    "syd-lk",
+    "syd-nano",
+    "syd-view",
+    "tok-dist-a",
+    "tok-dist-b",
+    "tok-edge-1",
+    "tok-edge-2",
+    "tok-lk",
+    "tok-nano",
+    "tok-view"
+   ],
+   "steps": {
+    "crowd.lon.opus48": {
+     "started_unix": 1795661125.0003297,
+     "seconds": 306.7,
+     "hosts": {
+      "new-edge-1": {
+       "class": "under test",
+       "stops": 6,
+       "worst_ms": 35.4,
+       "worst_at_unix": 1795661427.122
+      },
+      "syd-nano": {
+       "class": "measurement",
+       "stops": 4,
+       "worst_ms": 87.6,
+       "worst_at_unix": 1795661309.895
+      },
+      "syd-view": {
+       "class": "measurement",
+       "stops": 1,
+       "worst_ms": 40.5,
+       "worst_at_unix": 1795661272.201
+      },
+      "tok-edge-1": {
+       "class": "under test",
+       "stops": 6,
+       "worst_ms": 42.0,
+       "worst_at_unix": 1795661293.576
+      }
+     },
+     "hosts_without_heartbeat_cover": [
+      "contrib-lon",
+      "new-dist-a",
+      "new-edge-2"
+     ]
+    }
+   }
+  }
+ }
+}

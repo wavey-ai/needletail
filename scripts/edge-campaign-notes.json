@@ -1,0 +1,275 @@
+{
+  "_": "For each scenario of the edge campaign: what was fixed in the hardening round of 21 November 2026 because of it, and what is left. `edge-campaign-evidence.py --markdown --notes` adds both to the summary table. A key that ends with * matches every scenario that begins with it.",
+  "baseline": [
+    "Contributor ingest ring; playlists from stamps",
+    ""
+  ],
+  "reader-delay-*": [
+    "Reader asks ahead, and no more than 2 s ahead",
+    ""
+  ],
+  "reader-delay-300ms": [
+    "Reader asks ahead; stays on a live cache",
+    "A far viewer needs a lower rendition to start on: use a ladder"
+  ],
+  "reader-loss-*": [
+    "",
+    ""
+  ],
+  "reader-burst-loss": [
+    "",
+    ""
+  ],
+  "reader-reorder-duplicate": [
+    "",
+    "4K over one TCP connection under heavy reordering needs a lower rendition: see ladder-hlsjs-reorder"
+  ],
+  "reader-rate-cap": [
+    "",
+    "The reader model does not choose a rendition: see ladder-hlsjs-rate-cap"
+  ],
+  "reader-asymmetric": [
+    "",
+    "One request for each 5 ms part costs about 220 kbit/s of uplink: grouped parts (gap 9)"
+  ],
+  "reader-partition-heals": [
+    "Reader follows the playlist past lost parts",
+    ""
+  ],
+  "mesh-loss-*": [
+    "Loss-adaptive protection; fragment reassembly settings",
+    "A copy that warms on a lossy link can list a playlist that ends seconds behind live"
+  ],
+  "mesh-burst-loss": [
+    "Loss-adaptive protection; fragment reassembly settings",
+    "2 to 3% of the 4K parts are not delivered when bursts lose 70% of the packets"
+  ],
+  "mesh-delay-jitter": [
+    "A late source symbol is not a lost one; fragment disorder limit off",
+    ""
+  ],
+  "mesh-reorder-duplicate": [
+    "A late source symbol is not a lost one; fragment disorder limit off",
+    ""
+  ],
+  "mesh-partition-edge-heals": [
+    "An edge that has lost its parents answers 503 at once",
+    ""
+  ],
+  "mesh-flap-edge": [
+    "An edge that has lost its parents answers 503 at once",
+    "A 4K reader can stall once for 0.6 to 2.1 s: the next edge holds its request"
+  ],
+  "mesh-rate-cap-edge": [
+    "",
+    "An edge whose private link is narrower than its playlists is not taken out of assignment"
+  ],
+  "mesh-partition-distributor": [
+    "",
+    ""
+  ],
+  "wan-*": [
+    "",
+    "Wide-area protection is sized for a configured loss; lost parts are not signalled (gap 8)"
+  ],
+  "wan-partition-region-heals": [
+    "Reader stays on a live cache whose stream has stopped",
+    "The region has no media for the length of the cut"
+  ],
+  "contributor-uplink-loss": [
+    "",
+    "Wide-area protection is sized for a configured loss; lost parts are not signalled (gap 8)"
+  ],
+  "edge-kill": [
+    "Standby copy; alternates in standby order",
+    ""
+  ],
+  "edge-freeze-resume": [
+    "Alternates in standby order; reader ignores a reload to a cache that it has left",
+    ""
+  ],
+  "edge-rolling-restart": [
+    "",
+    "A 4K reader that is drained to an edge that has just started can stall for under half a second"
+  ],
+  "edge-restart-no-drain": [
+    "Readers follow the steering manifest",
+    ""
+  ],
+  "distributor-*": [
+    "",
+    ""
+  ],
+  "distributors-both-*": [
+    "Lost-parents answer; pathway in the neighbouring region",
+    "Readers lose the seconds until they play from the neighbouring region"
+  ],
+  "relay-*": [
+    "Reader follows the playlist past lost parts",
+    "The parts in flight are lost and not signalled (gap 8)"
+  ],
+  "contributor-freeze": [
+    "Reader stays on a live cache whose stream has stopped; larger publication queue",
+    "The contributor wakes with a backlog and needs about 4 s to be live again"
+  ],
+  "contributor-kill-restart": [
+    "Segment numbers continue above the earlier ones",
+    "One contributor is one point of failure; no EXT-X-DISCONTINUITY (gap 11)"
+  ],
+  "edge-cpu-starved": [
+    "",
+    "A starved edge is not taken out of assignment until it falls behind"
+  ],
+  "distributor-cpu-starved": [
+    "",
+    ""
+  ],
+  "edge-out-of-memory": [
+    "Allocator settings",
+    "On an instance with swap the squeezed edge slows instead of dying"
+  ],
+  "region-lost": [
+    "Pathway in the neighbouring region",
+    ""
+  ],
+  "capacity-edge-*": [
+    "Admission by request cost",
+    "5 ms parts cost one request each: about 60 audio readers for each vCPU (gap 9)"
+  ],
+  "capacity-edge-4k": [
+    "",
+    "The instance's network, about 1 Gbit/s, is the limit, not the CPU"
+  ],
+  "capacity-scales-with-edges": [
+    "Admission by request cost",
+    ""
+  ],
+  "capacity-entry-joins": [
+    "Entry point remembers the init scan",
+    "Ceiling not reached: the load tool falls behind first"
+  ],
+  "admission-refuses-cleanly": [
+    "Admission by request cost",
+    ""
+  ],
+  "flash-crowd": [
+    "HTTP on its own runtime; pending assignments; init scan",
+    "An edge is sent more readers than it admits through the alternates of full edges. On Linode the load host could not drive the admitted readers"
+  ],
+  "mixed-edge": [
+    "Admission by request cost",
+    ""
+  ],
+  "slow-and-stuck-readers": [
+    "",
+    ""
+  ],
+  "long-tail-one-stream-too-many": [
+    "A full node refuses a new stream by name; an edge with no free slot sends the reader to another edge",
+    ""
+  ],
+  "capacity-seventeen-streams": [
+    "",
+    "The contributor is the limit: one vCPU does not carry sixteen audio streams of 5 ms parts beside 4K (gap 9)"
+  ],
+  "long-tail-more-slots": [
+    "--playlist-slots",
+    ""
+  ],
+  "spec-playlists": [
+    "Stamps; reload rules; segment complete at its short last part; hint after the last listed part",
+    "No delta updates, no gap signalling"
+  ],
+  "player-hlsjs-4k": [
+    "Playlists that a player accepts",
+    "A viewer far from the region needs a lower rendition"
+  ],
+  "player-hlsjs-4k-second-region": [
+    "",
+    ""
+  ],
+  "player-hlsjs-edge-kill": [
+    "Standby copy; pathway clones",
+    ""
+  ],
+  "player-hlsjs-cache-kill": [
+    "Standby copy; pathway clones",
+    "From an ocean away the move to a new connection at 16.5 Mbit/s stalls for 4 s: a ladder is the remedy"
+  ],
+  "player-hlsjs-drain": [
+    "",
+    ""
+  ],
+  "player-hlsjs-region-lost": [
+    "Pathway in the neighbouring region",
+    ""
+  ],
+  "player-hlsjs-link-cut": [
+    "",
+    ""
+  ],
+  "player-ffmpeg-4k": [
+    "Stamps; cold copy held until playable",
+    ""
+  ],
+  "ladder-playlists": [
+    "Ladder; rendition reports; renditions numbered from one instant; one date in every rendition",
+    ""
+  ],
+  "ladder-hlsjs-*": [
+    "Ladder of four renditions; one date in every rendition",
+    "hls.js at one-second latency stalls on a shaped link with little room above the rendition (gap 3)"
+  ],
+  "clock-skew-edge": [
+    "Age of an advertisement by receipt",
+    ""
+  ],
+  "clock-skew-distributor": [
+    "Age of an advertisement by receipt: readers are assigned and served",
+    "The deadline of a relay object is a time of day: the skewed distributor drops every object"
+  ],
+  "clock-skew-contributor": [
+    "",
+    ""
+  ],
+  "edge-disk-full": [
+    "",
+    ""
+  ],
+  "endurance-churn": [
+    "Allocator settings; target duration follows a duration that recurs; an edge keeps no set of received slots; bounded packet sequence tracker",
+    ""
+  ],
+  "ladder-hlsjs-browser-cap": [
+    "Ladder of four renditions; one date in every rendition",
+    "From an ocean away, on the commit before the date fix, it stalled 5.6 s"
+  ],
+  "ladder-hlsjs-browser-steps": [
+    "Ladder of four renditions; one date in every rendition",
+    "Local: no stall, 2160p again after 28 s where the criterion is 25 s"
+  ],
+  "mesh-loss-2pct": [
+    "Loss-adaptive protection; fragment reassembly settings",
+    "Linode: one incident on one edge in each of two runs; local clean"
+  ],
+  "mesh-loss-5pct": [
+    "Loss-adaptive protection; fragment reassembly settings",
+    ""
+  ],
+  "mesh-loss-0.5pct": [
+    "Loss-adaptive protection; one parent fills a hole",
+    ""
+  ],
+  "clock-skew-contributor-behind": [
+    "",
+    "The deadline of a relay object is a time of day: the relays drop every object of a contributor whose clock is behind"
+  ],
+  "capacity-nine-streams": [
+    "",
+    "The contributor falls behind between five and nine streams of 5 ms parts (gap 9)"
+  ],
+  "capacity-thirteen-streams": [
+    "",
+    "The contributor falls behind between five and nine streams of 5 ms parts (gap 9)"
+  ]
+}

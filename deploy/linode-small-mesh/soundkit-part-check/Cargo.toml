@@ -1,0 +1,12 @@
+[package]
+name = "soundkit-part-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Verify the SoundKit v2 packet CRC32 of every raw LL-HLS Opus part in a directory"
+
+[dependencies]
+frame-header = "=0.2.2"
+
+# Standalone tool: not a member of the Needletail workspace.
+[workspace]

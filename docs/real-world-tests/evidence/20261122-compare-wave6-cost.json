@@ -1,0 +1,569 @@
+{
+ "tiers.cost-opus120-udp-1": {
+  "meta": {
+   "detail": "cost-opus120-udp-1",
+   "listeners": 1,
+   "mode": "udp-client-at-edge",
+   "streams": null,
+   "listeners_each": null,
+   "spread": {
+    "lon-view": 1
+   },
+   "pinned": null
+  },
+  "listeners": {
+   "started": 1,
+   "with_media": 1,
+   "latency_p50": 0.9,
+   "latency_p99": 1.24,
+   "missing": 0.0
+  },
+  "nodes": {
+   "contrib-lon": {
+    "node_busy_percent": 43.0,
+    "steal_percent": 0.02,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 122.649,
+    "net_eth1_packets_per_s": 22402,
+    "av-contrib_cpu_percent": 86.8,
+    "av-contrib_rss_mb": 82
+   },
+   "relay-primary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.0,
+    "net_eth1_packets_per_s": 0
+   },
+   "relay-secondary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0
+   },
+   "lon-dist-a": {
+    "node_busy_percent": 76.4,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 146.286,
+    "net_eth0_packets_per_s": 24389,
+    "net_eth1_mbit_per_s": 31.203,
+    "net_eth1_packets_per_s": 3936,
+    "av-mesh_cpu_percent": 139.9,
+    "av-mesh_rss_mb": 1949
+   },
+   "lon-dist-b": {
+    "node_busy_percent": 74.0,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 150.39,
+    "net_eth0_packets_per_s": 25548,
+    "net_eth1_mbit_per_s": 31.983,
+    "net_eth1_packets_per_s": 4060,
+    "av-mesh_cpu_percent": 145.1,
+    "av-mesh_rss_mb": 1942
+   },
+   "lon-edge-1": {
+    "node_busy_percent": 20.2,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.399,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 12.9,
+    "av-mesh_rss_mb": 787
+   },
+   "lon-edge-2": {
+    "node_busy_percent": 26.3,
+    "steal_percent": 0.06,
+    "net_eth0_mbit_per_s": 0.573,
+    "net_eth0_packets_per_s": 413,
+    "net_eth1_mbit_per_s": 0.389,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 15.4,
+    "av-mesh_rss_mb": 767
+   },
+   "lon-lk": {
+    "node_busy_percent": 0.5,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.003,
+    "net_eth0_packets_per_s": 3,
+    "livekit-server_cpu_percent": 0.2,
+    "livekit-server_rss_mb": 164
+   }
+  }
+ },
+ "tiers.cost-opus120-udp-20": {
+  "meta": {
+   "detail": "cost-opus120-udp-20",
+   "listeners": 20,
+   "mode": "udp-client-at-edge",
+   "streams": null,
+   "listeners_each": null,
+   "spread": {
+    "lon-view": 14,
+    "lon-nano": 6
+   },
+   "pinned": null
+  },
+  "listeners": {
+   "started": 20,
+   "with_media": 20,
+   "latency_p50": 1.02,
+   "latency_p99": 1.43,
+   "missing": 0.0
+  },
+  "nodes": {
+   "contrib-lon": {
+    "node_busy_percent": 43.7,
+    "steal_percent": 0.02,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 122.646,
+    "net_eth1_packets_per_s": 22401,
+    "av-contrib_cpu_percent": 86.5,
+    "av-contrib_rss_mb": 106
+   },
+   "relay-primary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.0,
+    "net_eth1_packets_per_s": 0
+   },
+   "relay-secondary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0
+   },
+   "lon-dist-a": {
+    "node_busy_percent": 76.0,
+    "steal_percent": 0.06,
+    "net_eth0_mbit_per_s": 144.518,
+    "net_eth0_packets_per_s": 23813,
+    "net_eth1_mbit_per_s": 33.48,
+    "net_eth1_packets_per_s": 4231,
+    "av-mesh_cpu_percent": 142.3,
+    "av-mesh_rss_mb": 2029
+   },
+   "lon-dist-b": {
+    "node_busy_percent": 75.0,
+    "steal_percent": 0.04,
+    "net_eth0_mbit_per_s": 154.971,
+    "net_eth0_packets_per_s": 26192,
+    "net_eth1_mbit_per_s": 31.989,
+    "net_eth1_packets_per_s": 4060,
+    "av-mesh_cpu_percent": 146.8,
+    "av-mesh_rss_mb": 2014
+   },
+   "lon-edge-1": {
+    "node_busy_percent": 28.0,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 6.304,
+    "net_eth0_packets_per_s": 4545,
+    "net_eth1_mbit_per_s": 0.393,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 18.5,
+    "av-mesh_rss_mb": 787
+   },
+   "lon-edge-2": {
+    "node_busy_percent": 26.2,
+    "steal_percent": 0.04,
+    "net_eth0_mbit_per_s": 5.157,
+    "net_eth0_packets_per_s": 3718,
+    "net_eth1_mbit_per_s": 0.39,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 17.5,
+    "av-mesh_rss_mb": 767
+   },
+   "lon-lk": {
+    "node_busy_percent": 0.5,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.003,
+    "net_eth0_packets_per_s": 3,
+    "livekit-server_cpu_percent": 0.2,
+    "livekit-server_rss_mb": 164
+   }
+  }
+ },
+ "tiers.cost-opus48-udp-1": {
+  "meta": {
+   "detail": "cost-opus48-udp-1",
+   "listeners": 1,
+   "mode": "udp-client-at-edge",
+   "streams": null,
+   "listeners_each": null,
+   "spread": {
+    "lon-view": 1
+   },
+   "pinned": null
+  },
+  "listeners": {
+   "started": 1,
+   "with_media": 1,
+   "latency_p50": 0.93,
+   "latency_p99": 1.42,
+   "missing": 0.0
+  },
+  "nodes": {
+   "contrib-lon": {
+    "node_busy_percent": 48.6,
+    "steal_percent": 0.05,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 157.468,
+    "net_eth1_packets_per_s": 32002,
+    "av-contrib_cpu_percent": 120.4,
+    "av-contrib_rss_mb": 104
+   },
+   "relay-primary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.0,
+    "net_eth1_packets_per_s": 0
+   },
+   "relay-secondary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0
+   },
+   "lon-dist-a": {
+    "node_busy_percent": 84.6,
+    "steal_percent": 0.07,
+    "net_eth0_mbit_per_s": 170.085,
+    "net_eth0_packets_per_s": 27945,
+    "net_eth1_mbit_per_s": 69.258,
+    "net_eth1_packets_per_s": 9282,
+    "av-mesh_cpu_percent": 161.8,
+    "av-mesh_rss_mb": 1804
+   },
+   "lon-dist-b": {
+    "node_busy_percent": 82.8,
+    "steal_percent": 0.04,
+    "net_eth0_mbit_per_s": 180.236,
+    "net_eth0_packets_per_s": 30045,
+    "net_eth1_mbit_per_s": 68.504,
+    "net_eth1_packets_per_s": 9204,
+    "av-mesh_cpu_percent": 161.4,
+    "av-mesh_rss_mb": 1810
+   },
+   "lon-edge-1": {
+    "node_busy_percent": 36.5,
+    "steal_percent": 0.02,
+    "net_eth0_mbit_per_s": 0.938,
+    "net_eth0_packets_per_s": 1034,
+    "net_eth1_mbit_per_s": 0.39,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 33.9,
+    "av-mesh_rss_mb": 782
+   },
+   "lon-edge-2": {
+    "node_busy_percent": 28.3,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.387,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 26.0,
+    "av-mesh_rss_mb": 759
+   },
+   "lon-lk": {
+    "node_busy_percent": 0.5,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 0.003,
+    "net_eth0_packets_per_s": 3,
+    "livekit-server_cpu_percent": 0.2,
+    "livekit-server_rss_mb": 164
+   }
+  }
+ },
+ "tiers.cost-opus48-udp-20": {
+  "meta": {
+   "detail": "cost-opus48-udp-20",
+   "listeners": 20,
+   "mode": "udp-client-at-edge",
+   "streams": null,
+   "listeners_each": null,
+   "spread": {
+    "lon-view": 14,
+    "lon-nano": 6
+   },
+   "pinned": null
+  },
+  "listeners": {
+   "started": 20,
+   "with_media": 20,
+   "latency_p50": 1.07,
+   "latency_p99": 1.79,
+   "missing": 0.0
+  },
+  "nodes": {
+   "contrib-lon": {
+    "node_busy_percent": 48.6,
+    "steal_percent": 0.03,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 157.475,
+    "net_eth1_packets_per_s": 32003,
+    "av-contrib_cpu_percent": 120.1,
+    "av-contrib_rss_mb": 106
+   },
+   "relay-primary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.0,
+    "net_eth1_packets_per_s": 0
+   },
+   "relay-secondary": {
+    "node_busy_percent": 0.4,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0
+   },
+   "lon-dist-a": {
+    "node_busy_percent": 84.6,
+    "steal_percent": 0.05,
+    "net_eth0_mbit_per_s": 175.688,
+    "net_eth0_packets_per_s": 28711,
+    "net_eth1_mbit_per_s": 71.499,
+    "net_eth1_packets_per_s": 9590,
+    "av-mesh_cpu_percent": 160.7,
+    "av-mesh_rss_mb": 1889
+   },
+   "lon-dist-b": {
+    "node_busy_percent": 82.4,
+    "steal_percent": 0.03,
+    "net_eth0_mbit_per_s": 175.554,
+    "net_eth0_packets_per_s": 29093,
+    "net_eth1_mbit_per_s": 74.121,
+    "net_eth1_packets_per_s": 9976,
+    "av-mesh_cpu_percent": 160.0,
+    "av-mesh_rss_mb": 1893
+   },
+   "lon-edge-1": {
+    "node_busy_percent": 40.1,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 11.033,
+    "net_eth0_packets_per_s": 12152,
+    "net_eth1_mbit_per_s": 0.392,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 40.4,
+    "av-mesh_rss_mb": 783
+   },
+   "lon-edge-2": {
+    "node_busy_percent": 34.1,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 7.504,
+    "net_eth0_packets_per_s": 8266,
+    "net_eth1_mbit_per_s": 0.422,
+    "net_eth1_packets_per_s": 127,
+    "av-mesh_cpu_percent": 36.5,
+    "av-mesh_rss_mb": 764
+   },
+   "lon-lk": {
+    "node_busy_percent": 0.4,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.003,
+    "net_eth0_packets_per_s": 3,
+    "livekit-server_cpu_percent": 0.2,
+    "livekit-server_rss_mb": 164
+   }
+  }
+ },
+ "tiers.cost-pcm48-udp-1": {
+  "meta": {
+   "detail": "cost-pcm48-udp-1",
+   "listeners": 1,
+   "mode": "udp-client-at-edge",
+   "streams": null,
+   "listeners_each": null,
+   "spread": {
+    "lon-view": 1
+   },
+   "pinned": null
+  },
+  "listeners": {
+   "started": 1,
+   "with_media": 1,
+   "latency_p50": 0.78,
+   "latency_p99": 1.25,
+   "missing": 0.0
+  },
+  "nodes": {
+   "contrib-lon": {
+    "node_busy_percent": 0.7,
+    "steal_percent": 0.03,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 93.325,
+    "net_eth1_packets_per_s": 16001,
+    "av-contrib_cpu_percent": 62.4,
+    "av-contrib_rss_mb": 62
+   },
+   "relay-primary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.0,
+    "net_eth1_packets_per_s": 0
+   },
+   "relay-secondary": {
+    "node_busy_percent": 0.4,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0
+   },
+   "lon-dist-a": {
+    "node_busy_percent": 66.7,
+    "steal_percent": 0.03,
+    "net_eth0_mbit_per_s": 113.331,
+    "net_eth0_packets_per_s": 18159,
+    "net_eth1_mbit_per_s": 94.52,
+    "net_eth1_packets_per_s": 10214,
+    "av-mesh_cpu_percent": 118.2,
+    "av-mesh_rss_mb": 2067
+   },
+   "lon-dist-b": {
+    "node_busy_percent": 66.6,
+    "steal_percent": 0.02,
+    "net_eth0_mbit_per_s": 112.526,
+    "net_eth0_packets_per_s": 18052,
+    "net_eth1_mbit_per_s": 90.882,
+    "net_eth1_packets_per_s": 9837,
+    "av-mesh_cpu_percent": 111.7,
+    "av-mesh_rss_mb": 2088
+   },
+   "lon-edge-1": {
+    "node_busy_percent": 17.2,
+    "steal_percent": 0.04,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.399,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 33.7,
+    "av-mesh_rss_mb": 810
+   },
+   "lon-edge-2": {
+    "node_busy_percent": 29.0,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 2.822,
+    "net_eth0_packets_per_s": 1033,
+    "net_eth1_mbit_per_s": 0.388,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 36.7,
+    "av-mesh_rss_mb": 771
+   },
+   "lon-lk": {
+    "node_busy_percent": 0.5,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.003,
+    "net_eth0_packets_per_s": 3,
+    "livekit-server_cpu_percent": 0.1,
+    "livekit-server_rss_mb": 164
+   }
+  }
+ },
+ "tiers.cost-pcm48-udp-20": {
+  "meta": {
+   "detail": "cost-pcm48-udp-20",
+   "listeners": 20,
+   "mode": "udp-client-at-edge",
+   "streams": null,
+   "listeners_each": null,
+   "spread": {
+    "lon-view": 14,
+    "lon-nano": 6
+   },
+   "pinned": null
+  },
+  "listeners": {
+   "started": 20,
+   "with_media": 20,
+   "latency_p50": 0.86,
+   "latency_p99": 1.17,
+   "missing": 0.0
+  },
+  "nodes": {
+   "contrib-lon": {
+    "node_busy_percent": 0.5,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 93.324,
+    "net_eth1_packets_per_s": 16001,
+    "av-contrib_cpu_percent": 63.0,
+    "av-contrib_rss_mb": 100
+   },
+   "relay-primary": {
+    "node_busy_percent": 0.3,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0,
+    "net_eth1_mbit_per_s": 0.0,
+    "net_eth1_packets_per_s": 0
+   },
+   "relay-secondary": {
+    "node_busy_percent": 0.4,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.0,
+    "net_eth0_packets_per_s": 0
+   },
+   "lon-dist-a": {
+    "node_busy_percent": 67.8,
+    "steal_percent": 0.02,
+    "net_eth0_mbit_per_s": 112.156,
+    "net_eth0_packets_per_s": 18002,
+    "net_eth1_mbit_per_s": 95.43,
+    "net_eth1_packets_per_s": 10315,
+    "av-mesh_cpu_percent": 118.8,
+    "av-mesh_rss_mb": 2107
+   },
+   "lon-dist-b": {
+    "node_busy_percent": 66.0,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 116.043,
+    "net_eth0_packets_per_s": 18522,
+    "net_eth1_mbit_per_s": 92.948,
+    "net_eth1_packets_per_s": 10060,
+    "av-mesh_cpu_percent": 113.7,
+    "av-mesh_rss_mb": 2136
+   },
+   "lon-edge-1": {
+    "node_busy_percent": 19.4,
+    "steal_percent": 0.03,
+    "net_eth0_mbit_per_s": 19.747,
+    "net_eth0_packets_per_s": 7231,
+    "net_eth1_mbit_per_s": 0.393,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 43.8,
+    "av-mesh_rss_mb": 822
+   },
+   "lon-edge-2": {
+    "node_busy_percent": 38.4,
+    "steal_percent": 0.01,
+    "net_eth0_mbit_per_s": 36.644,
+    "net_eth0_packets_per_s": 13418,
+    "net_eth1_mbit_per_s": 0.391,
+    "net_eth1_packets_per_s": 125,
+    "av-mesh_cpu_percent": 44.8,
+    "av-mesh_rss_mb": 807
+   },
+   "lon-lk": {
+    "node_busy_percent": 0.5,
+    "steal_percent": 0.0,
+    "net_eth0_mbit_per_s": 0.003,
+    "net_eth0_packets_per_s": 3,
+    "livekit-server_cpu_percent": 0.2,
+    "livekit-server_rss_mb": 164
+   }
+  }
+ }
+}
