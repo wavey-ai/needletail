@@ -1,0 +1,76 @@
+{
+  "schema": "needletail.point-to-point-transport-comparison.v1",
+  "run_id": "tbench-linode-20261124",
+  "started_at_utc": "2026-11-24T08:10:23.192377Z",
+  "last_case_at_utc": "2026-11-24T17:24:04.590112Z",
+  "case_count": 972,
+  "case_status_counts": {
+    "ok": 967,
+    "transport_failed": 5
+  },
+  "archived_earlier_attempts": 7,
+  "linode_lab": {
+    "roles_by_plan": {
+      "London sender and receiver": [
+        "g6-dedicated-16",
+        "g6-dedicated-16"
+      ],
+      "Newark and Sydney receivers": [
+        "g6-dedicated-8",
+        "g6-dedicated-8"
+      ]
+    },
+    "cost_estimate_usd": 12.96,
+    "teardown_recorded_in_harness_report": true
+  },
+  "source": {
+    "harness": {
+      "head": "9df3883778d2bc6e2689ffe0e52596ad3ae19ff0",
+      "dirty": true
+    },
+    "harness_report_commit": "3fb11ca",
+    "third_party": {
+      "librist": {
+        "version": "0.2.20",
+        "git_describe": "v0.2.20",
+        "git_head": "4f45ef8f78983892d52ccd52d9f675435b23738f"
+      },
+      "libsrt": {
+        "version": "1.5.7",
+        "git_describe": "v1.5.7",
+        "git_head": "899348d8318eb9a3c5a5b6ec43c4a1114288773a"
+      }
+    },
+    "rust_rist_tested_revisions": [
+      "904e3e8",
+      "614c10a"
+    ],
+    "raptorq": [
+      "2.0.1"
+    ],
+    "raptorq_datagram_fec": [
+      "0.1.6"
+    ],
+    "archive_manifest_sha256": "2e9de4e72e2f25700da21626c5a45ee988f9751eb2dc803ea5eb28b0b073c366",
+    "original_case_table_sha256": "86e27931183b3cc3a95f2a5c7205b1be401845812ea996341aaace7e99fe32a5",
+    "public_case_table_sha256": "69afb93402e3be64c67b6ee0c3b9249d2096a7890b7d48550528e63f3131cbf2",
+    "public_manifest_reference": "https://github.com/wavey-ai/rist-rs/blob/f1be8f87/benchmarks/2026-11-26-librist-parity/manifests/baseline-20261124.json",
+    "archive": "~/needletail-data/tbench-linode-20261124/"
+  },
+  "methodology": {
+    "run_seconds": 15,
+    "frames_per_second": 24,
+    "frames_per_receiver": 360,
+    "source": "3840x2160 H.264, GOP 48, no B-frames",
+    "container_by_adapter": {
+      "librist and libsrt": "MPEG-TS",
+      "RaptorQ": "one fMP4 fragment per frame"
+    },
+    "default_deadlines_ms": {
+      "librist and libsrt": "max(4 x RTT,40)",
+      "RaptorQ without ARQ": "max(2 x RTT,40)",
+      "RaptorQ with whole-part ARQ": "max(4 x RTT,40)"
+    },
+    "outage_sweep_deadline_ms": 400
+  }
+}

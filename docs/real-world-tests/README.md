@@ -71,6 +71,11 @@ LiveKit and 63 of 64 against LiveKit Cloud. Its 247 Mbit/s 4K soak passed by
 the better-viewer rule, with admission and held-session gaps. The record
 links the tested revisions, raw archive, and verification.
 
+Standalone transport comparison:
+[2026-11-24 RIST, SRT, and RaptorQ for live 4K](evidence/2026-11-24-transport-comparison/README.md).
+The direct harness ran 972 cases on dedicated Linode hosts, with charts for
+added delay, clustered packet loss, and recovery after outages.
+
 Earlier comparison with other networks, audio:
 [2026-11-21 audio against Cloudflare and LiveKit](2026-11-21-audio-against-cloudflare-and-livekit.md).
 Opus and lossless PCM from London to London, New York, Tokyo and Sydney, through Needletail (RaptorQ FEC over UDP and LL-HLS, smallest frames by default), Cloudflare Realtime, Cloudflare Stream WHIP/WHEP, self-hosted LiveKit and LiveKit Cloud, on dedicated-CPU instances only.

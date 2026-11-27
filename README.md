@@ -517,6 +517,7 @@ Production deployments use a durable controller, host node agents, and supervise
 - [Audio delivery lanes](docs/audio-delivery-lanes.md)
 - [Operations telemetry](docs/operations-telemetry-transport.md)
 - [Global multitrack test record](docs/real-world-tests/2026-07-28-global-multitrack-audio.md)
+- [Direct 4K transport benchmark for RIST, SRT, and RaptorQ](docs/real-world-tests/evidence/2026-11-24-transport-comparison/README.md)
 - [Real-world evidence](docs/real-world-tests/README.md)
 
 ## License

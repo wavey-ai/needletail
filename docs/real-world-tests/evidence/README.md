@@ -13,6 +13,7 @@ and names the exact failed check.
 
 Evidence index:
 
+- [2026-11-24-transport-comparison](2026-11-24-transport-comparison/README.md) contains charts, 972 per-case results, and provenance for the standalone RIST, SRT, and RaptorQ comparison.
 - [20261127-integration-6-main.json](20261127-integration-6-main.json) records the integration 6 pins, Linode archive, regenerated Wave 12 results, and merge verification.
 - [20261126-4k-wave12-audio-scoreboard.json](20261126-4k-wave12-audio-scoreboard.json) and [20261126-4k-wave12-audio-scoreboard-lkcloud.json](20261126-4k-wave12-audio-scoreboard-lkcloud.json) retain the four-region audio comparisons.
 - [20261126-4k-wave12-video-w12-soak-scoreboard.json](20261126-4k-wave12-video-w12-soak-scoreboard.json) retains the 300-second 4K cell, including per-region viewer results.
